@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#14171c" />
+  <title>A4 · Docking en AR</title>
+  <link rel="stylesheet" href="./css/style.css?v=2" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="canvas-host"></div>
+
+  <div id="overlay">
+    <div id="crosshair" hidden></div>
+    <div id="touch-layer" hidden></div>
+
+    <header id="hud" hidden>
+      <div class="hud-row">
+        <span id="hud-technique" class="chip">Gestos</span>
+        <span id="hud-trial" class="chip">Ensayo 1/3</span>
+        <span id="hud-status" class="chip chip-muted">Colocar</span>
+      </div>
+      <p id="hud-instruction">Apunta el centro a una mesa o al suelo y toca para colocar el objetivo.</p>
+      <p id="hud-detail"></p>
+    </header>
+
+    <div id="toast" role="status"></div>
+
+    <div id="bottom-bar" hidden>
+      <button id="btn-carry" type="button" hidden>Mantener para llevar</button>
+      <div class="bar-row">
+        <button id="btn-restart" type="button" class="ghost">Reiniciar intento</button>
+        <button id="btn-exit" type="button" class="ghost">Salir</button>
+      </div>
+      <p id="preview-hint" hidden>Escritorio: arrastra para mirar antes de elegir. Con gestos, Shift+arrastrar gira. Con carry, arrastra el botón para mover la vista.</p>
+    </div>
+
+    <section id="screen-setup" class="sheet">
+      <p class="eyebrow">MAC0623 · Assignment 4</p>
+      <h1>Docking en AR</h1>
+      <p class="lead">Coloca el objetivo sobre una superficie real, elige el objeto del mismo color y encájalo: 2 cm y 10° de giro.</p>
+
+      <label class="field">
+        <span>Participante (código, no el nombre)</span>
+        <input id="participant" type="text" maxlength="24" placeholder="P1" autocomplete="off" enterkeyhint="done" />
+      </label>
+
+      <fieldset class="techniques">
+        <legend>Técnica de este bloque</legend>
+        <label class="choice">
+          <input type="radio" name="technique" value="touch" checked />
+          <span>
+            <strong>Gestos táctiles</strong>
+            <small>Un dedo mueve. Dos dedos giran.</small>
+          </span>
+        </label>
+        <label class="choice">
+          <input type="radio" name="technique" value="carry" />
+          <span>
+            <strong>Carry</strong>
+            <small>El objeto sigue al teléfono mientras mantienes el botón.</small>
+          </span>
+        </label>
+      </fieldset>
+
+      <label class="field">
+        <span>Superficie e iluminación (para el informe)</span>
+        <textarea id="notes" rows="2" placeholder="Mesa clara, luz de techo, sin sol directo"></textarea>
+      </label>
+
+      <p id="xr-status" class="status">Comprobando WebXR…</p>
+      <p id="saved-status" class="status"></p>
+      <p class="hint">Contrabalanceo: el participante impar empieza por Gestos; el par, por Carry. El segundo bloque es la otra técnica.</p>
+
+      <div class="actions">
+        <button id="btn-ar" type="button" class="primary" disabled>Entrar en AR</button>
+        <button id="btn-preview" type="button" class="secondary">Vista previa en escritorio</button>
+      </div>
+    </section>
+
+    <section id="screen-success" class="sheet sheet-compact" hidden>
+      <p class="eyebrow">Encajado</p>
+      <h2 id="success-title">El objeto coincidió con el objetivo</h2>
+      <dl id="success-stats" class="stats"></dl>
+      <button id="btn-next" type="button" class="primary">Siguiente ensayo</button>
+    </section>
+
+    <section id="screen-fatigue" class="sheet" hidden>
+      <p class="eyebrow">Después de esta técnica</p>
+      <h2>How tired are your arms?</h2>
+      <p class="lead">¿Qué tan cansados tienes los brazos? 1 es nada, 5 es mucho.</p>
+      <div class="scale" id="fatigue-scale">
+        <button type="button" data-score="1">1<span>Nada</span></button>
+        <button type="button" data-score="2">2</button>
+        <button type="button" data-score="3">3</button>
+        <button type="button" data-score="4">4</button>
+        <button type="button" data-score="5">5<span>Mucho</span></button>
+      </div>
+    </section>
+
+    <section id="screen-summary" class="sheet sheet-scroll" hidden>
+      <p class="eyebrow">Bloque listo</p>
+      <h2 id="summary-title">Datos guardados</h2>
+      <div id="summary-table"></div>
+      <div class="actions">
+        <button id="btn-csv" type="button" class="primary">Descargar CSV</button>
+        <button id="btn-other" type="button" class="secondary">Hacer la otra técnica</button>
+        <button id="btn-setup" type="button" class="ghost">Volver al inicio</button>
+        <button id="btn-clear" type="button" class="ghost danger">Borrar datos de este navegador</button>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
