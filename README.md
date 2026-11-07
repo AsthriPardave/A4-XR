@@ -7,7 +7,7 @@ WebXR docking task on a real horizontal surface. Three simple objects (arrow, we
 WebXR needs a secure context.
 
 - Desktop preview (no phone): open `index.html` with any static server. `http://localhost` counts as secure for the preview button. Example: `npx serve` in this folder.
-- Phone: HTTPS. GitHub Pages works. For a USB debug session, reverse-proxy the port (`adb reverse tcp:3000 tcp:3000`) and open the `localhost` URL in Chrome on the phone, or publish the folder.
+- Phone: WebXR only runs in a secure context. `python -m http.server` on a LAN address (`http://192.168…`) leaves **Entrar en AR** blocked. With the phone plugged in and USB debugging on, run `adb reverse tcp:8000 tcp:8000` and open `http://localhost:8000` in Chrome on the phone. GitHub Pages also works. The page writes the exact reason under the button.
 - Remote console: `chrome://inspect` with the phone plugged in.
 
 The page checks `immersive-ar`. **Entrar en AR** starts a hit-test session (`hit-test`, and `dom-overlay` when the phone allows it). **Vista previa en escritorio** uses a virtual floor so the flow can be checked without ARCore. Add `?debug=1` to see live position and yaw error.

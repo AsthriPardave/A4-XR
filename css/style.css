@@ -157,7 +157,12 @@ html, body {
   font-size: 14px;
 }
 
+.status.error {
+  color: #ffb4b4;
+}
+
 #toast {
+  z-index: 6;
   position: absolute;
   left: 50%;
   top: calc(118px + var(--safe-top));
@@ -222,6 +227,7 @@ html, body {
 }
 
 .sheet {
+  z-index: 4;
   touch-action: auto;
   position: absolute;
   left: 50%;

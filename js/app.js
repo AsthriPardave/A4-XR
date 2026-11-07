@@ -232,25 +232,50 @@ function init() {
   refreshSavedStatus();
 }
 
-async function detectXR() {
+function xrBlockReason() {
+  if (!window.isSecureContext) {
+    const port = location.port || "80";
+    return `Chrome bloquea WebXR en ${location.host} porque la página no es HTTPS ni localhost. Conecta el teléfono por USB, activa la depuración y en la computadora ejecuta: adb reverse tcp:${port} tcp:${port}. Después abre http://localhost:${port} en Chrome del teléfono.`;
+  }
   if (!navigator.xr) {
-    ui.xrStatus.textContent = "Este navegador no tiene WebXR. Usa Chrome en un Android con ARCore, o la vista previa.";
+    return "Este navegador no tiene WebXR. Ábrelo con Chrome y con “Google Play Services for AR” instalado, no con el navegador del fabricante.";
+  }
+  return "";
+}
+
+function showXrStatus(message, isError) {
+  ui.xrStatus.textContent = message;
+  ui.xrStatus.classList.toggle("error", !!isError);
+}
+
+async function detectXR() {
+  const blocked = xrBlockReason();
+  if (blocked) {
+    state.xrSupported = false;
+    showXrStatus(blocked, true);
+    refreshSetupButtons();
     return;
   }
   try {
     state.xrSupported = await navigator.xr.isSessionSupported("immersive-ar");
-  } catch {
+  } catch (err) {
     state.xrSupported = false;
+    showXrStatus("No se pudo comprobar AR. " + (err && err.message ? err.message : ""), true);
+    refreshSetupButtons();
+    return;
   }
-  ui.xrStatus.textContent = state.xrSupported
-    ? "WebXR AR disponible. En el teléfono hace falta HTTPS."
-    : "AR inmersivo no disponible aquí. La vista previa sirve para revisar la tarea; el estudio va en el teléfono.";
+  showXrStatus(
+    state.xrSupported
+      ? "AR listo. Escribe el código y pulsa Entrar en AR."
+      : "Este Chrome no puede abrir una sesión AR. Instala Google Play Services for AR y actualiza Chrome.",
+    !state.xrSupported
+  );
   refreshSetupButtons();
 }
 
 function refreshSetupButtons() {
   const idOk = ui.participant.value.trim().length > 0;
-  ui.btnAr.disabled = !(idOk && state.xrSupported);
+  ui.btnAr.disabled = !idOk;
   ui.btnPreview.disabled = !idOk;
 }
 
@@ -304,28 +329,35 @@ async function startSession(mode) {
   state.mode = mode;
 
   if (mode === "ar") {
-    const overlay = ui.overlay;
-    const options = [
-      { requiredFeatures: ["hit-test", "dom-overlay"], domOverlay: { root: overlay } },
-      { requiredFeatures: ["hit-test"], optionalFeatures: ["dom-overlay"], domOverlay: { root: overlay } },
-    ];
-    let session = null;
-    let lastError = null;
-    for (const opt of options) {
-      try {
-        session = await navigator.xr.requestSession("immersive-ar", opt);
-        break;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    if (!session) {
-      toast("No se pudo abrir AR. " + (lastError ? lastError.message : ""));
+    const blocked = xrBlockReason();
+    if (blocked) {
+      showXrStatus(blocked, true);
       state.mode = "setup";
       return;
     }
-    renderer.xr.setReferenceSpaceType("local");
-    await renderer.xr.setSession(session);
+    let session = null;
+    try {
+      session = await navigator.xr.requestSession("immersive-ar", {
+        requiredFeatures: ["hit-test"],
+        optionalFeatures: ["dom-overlay", "local-floor"],
+        domOverlay: { root: ui.overlay },
+      });
+    } catch (err) {
+      console.error(err);
+      showXrStatus("No se abrió AR. " + (err && err.message ? err.message : "Error desconocido."), true);
+      state.mode = "setup";
+      return;
+    }
+    try {
+      renderer.xr.setReferenceSpaceType("local");
+      await renderer.xr.setSession(session);
+    } catch (err) {
+      console.error(err);
+      showXrStatus("La sesión AR no arrancó. " + (err && err.message ? err.message : ""), true);
+      state.mode = "setup";
+      try { session.end(); } catch { /* already closed */ }
+      return;
+    }
     setFloorVisible(false);
   } else {
     setFloorVisible(true);
