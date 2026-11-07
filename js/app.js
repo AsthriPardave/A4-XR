@@ -136,6 +136,7 @@ let floorMesh;
 let grid;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
+let aimMessage = "Mueve el teléfono de lado a lado, apuntando a la mesa o al suelo.";
 let ghost = null;
 let pieces = [];
 let lastFrameTime = performance.now();
@@ -342,8 +343,8 @@ async function startSession(mode) {
     let session = null;
     try {
       session = await navigator.xr.requestSession("immersive-ar", {
-        requiredFeatures: ["hit-test"],
-        optionalFeatures: ["dom-overlay", "local-floor"],
+        requiredFeatures: ["local", "hit-test"],
+        optionalFeatures: ["dom-overlay", "dom-overlay-for-handheld-ar", "local-floor"],
         domOverlay: { root: ui.overlay },
       });
     } catch (err) {
@@ -355,6 +356,7 @@ async function startSession(mode) {
     try {
       renderer.xr.setReferenceSpaceType("local");
       await renderer.xr.setSession(session);
+      await setupHitTest(session);
     } catch (err) {
       console.error(err);
       showXrStatus("La sesión AR no arrancó. " + (err && err.message ? err.message : ""), true);
@@ -1204,18 +1206,18 @@ function noteTracking(ok) {
   if (ok) state.sawTracking = true;
 }
 
+async function setupHitTest(session) {
+  hitTestSourceRequested = true;
+  const viewerSpace = await session.requestReferenceSpace("viewer");
+  hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+}
+
 function ensureHitTest(frame) {
   if (!frame || state.mode !== "ar" || hitTestSourceRequested) return;
-  const session = frame.session;
-  hitTestSourceRequested = true;
-  session.requestReferenceSpace("viewer").then((viewerSpace) => {
-    session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-      hitTestSource = source;
-    }).catch(() => {
-      hitTestSourceRequested = false;
-    });
-  }).catch(() => {
+  setupHitTest(frame.session).catch((err) => {
+    console.error(err);
     hitTestSourceRequested = false;
+    aimMessage = "No se pudo crear el detector de superficies.";
   });
 }
 
@@ -1229,6 +1231,7 @@ function updateReticle(frame) {
   }
 
   if (state.mode === "preview") {
+    reticle.matrixAutoUpdate = true;
     raycaster.setFromCamera(ndc.set(0, 0), camera);
     const hit = raycaster.ray.intersectPlane(floorPlane, _v1);
     state.aimValid = !!hit;
@@ -1240,8 +1243,10 @@ function updateReticle(frame) {
       reticle.position.y = 0.004;
       reticle.quaternion.identity();
       reticle.material.color.setHex(0xffffff);
+      aimMessage = "Superficie encontrada. Toca para colocar el objetivo.";
     } else {
       reticle.visible = false;
+      aimMessage = "Apunta el centro a la mesa.";
     }
     noteTracking(true);
     refreshAimText();
@@ -1250,36 +1255,48 @@ function updateReticle(frame) {
 
   state.aimValid = false;
   reticle.visible = false;
+  reticle.matrixAutoUpdate = false;
   if (!frame || !hitTestSource) {
+    aimMessage = "Preparando el detector. Mueve el teléfono un momento.";
     refreshAimText();
     return;
   }
   const referenceSpace = renderer.xr.getReferenceSpace();
-  if (!referenceSpace) return;
-  const hits = frame.getHitTestResults(hitTestSource);
-  if (hits.length) {
-    const pose = hits[0].getPose(referenceSpace);
-    if (pose) {
-      _m1.fromArray(pose.transform.matrix);
-      aimPoint.setFromMatrixPosition(_m1);
-      aimNormal.setFromMatrixColumn(_m1, 1).normalize();
-      if (aimNormal.y < 0) aimNormal.multiplyScalar(-1);
-      const horizontal = aimNormal.y > 0.75;
-      state.aimValid = horizontal;
-      reticle.visible = true;
-      reticle.position.copy(aimPoint);
-      _q1.setFromUnitVectors(_v1.set(0, 1, 0), aimNormal);
-      reticle.quaternion.copy(_q1);
-      reticle.material.color.setHex(horizontal ? 0xffffff : 0xe15b5b);
-    }
+  if (!referenceSpace) {
+    aimMessage = "Esperando la posición del teléfono…";
+    refreshAimText();
+    return;
   }
+  const viewerPose = frame.getViewerPose(referenceSpace);
+  const hits = viewerPose ? frame.getHitTestResults(hitTestSource) : [];
+  if (!hits.length) {
+    aimMessage = "Mueve el teléfono de lado a lado, apuntando a la mesa o al suelo.";
+    refreshAimText();
+    return;
+  }
+  const hitPose = hits[0].getPose(referenceSpace);
+  if (!hitPose) {
+    aimMessage = "Hay un plano, pero todavía no se puede ubicar. Sigue moviendo el teléfono.";
+    refreshAimText();
+    return;
+  }
+  reticle.matrix.fromArray(hitPose.transform.matrix);
+  reticle.matrix.decompose(aimPoint, reticle.quaternion, _v1);
+  aimNormal.setFromMatrixColumn(reticle.matrix, 1).normalize();
+  if (aimNormal.y < 0) aimNormal.multiplyScalar(-1);
+  const horizontal = aimNormal.y > 0.45;
+  state.aimValid = horizontal;
+  reticle.visible = true;
+  reticle.material.color.setHex(horizontal ? 0xffffff : 0xe15b5b);
+  aimMessage = horizontal
+    ? "Superficie encontrada. Toca para colocar el objetivo."
+    : "Eso no es una superficie horizontal. Apunta a la mesa o al suelo.";
   refreshAimText();
 }
 
 function refreshAimText() {
   if (state.phase !== "placing") return;
-  const msg = state.aimValid ? "Superficie horizontal encontrada." : "Buscando una superficie horizontal…";
-  if (ui.detail.textContent !== msg) ui.detail.textContent = msg;
+  if (ui.detail.textContent !== aimMessage) ui.detail.textContent = aimMessage;
 }
 
 function sampleTracking(frame) {
