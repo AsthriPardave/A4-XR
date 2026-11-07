@@ -99,7 +99,7 @@ html, body {
   height: 2px;
 }
 
-#hud, #bottom-bar, #toast, .sheet {
+#hud, #bottom-bar, #toast {
   pointer-events: none;
 }
 
@@ -279,6 +279,11 @@ h2 { font-size: 22px; }
   margin-bottom: 14px;
   font-size: 13px;
   color: var(--muted);
+}
+
+.field input, .field textarea, .choice, .techniques {
+  pointer-events: auto;
+  touch-action: manipulation;
 }
 
 .field input, .field textarea {

@@ -230,6 +230,7 @@ function init() {
   showSetup();
   detectXR();
   refreshSavedStatus();
+  window.__A4_READY = true;
 }
 
 function xrBlockReason() {
@@ -274,9 +275,8 @@ async function detectXR() {
 }
 
 function refreshSetupButtons() {
-  const idOk = ui.participant.value.trim().length > 0;
-  ui.btnAr.disabled = !idOk;
-  ui.btnPreview.disabled = !idOk;
+  ui.btnAr.disabled = false;
+  ui.btnPreview.disabled = false;
 }
 
 function refreshSavedStatus() {
@@ -322,7 +322,11 @@ function readSetup() {
 
 async function startSession(mode) {
   readSetup();
-  if (!state.participant) return;
+  if (!state.participant) {
+    showXrStatus("Escribe un código, por ejemplo P1, y pulsa otra vez.", true);
+    ui.participant.focus();
+    return;
+  }
 
   state.blockId = `${state.participant}-${state.technique}-${Date.now()}`;
   state.trial = 1;
