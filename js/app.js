@@ -142,12 +142,10 @@ const smoothPos = new THREE.Vector3();
 const smoothQuat = new THREE.Quaternion();
 let smoothReady = false;
 let lastHitAt = 0;
-let lastHorizontal = false;
 
 function resetAimSmooth() {
   smoothReady = false;
   lastHitAt = 0;
-  lastHorizontal = false;
 }
 let ghost = null;
 let pieces = [];
@@ -186,23 +184,12 @@ function init() {
   grid.position.y = 0;
   scene.add(grid);
 
-  const reticleGeom = new THREE.RingGeometry(0.075, 0.1, 48);
-  reticleGeom.rotateX(-Math.PI / 2);
   reticle = new THREE.Mesh(
-    reticleGeom,
-    new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthTest: false })
+    new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
   );
-  reticle.frustumCulled = false;
-  reticle.renderOrder = 2;
+  reticle.matrixAutoUpdate = false;
   reticle.visible = false;
-  const reticleDot = new THREE.Mesh(
-    new THREE.CircleGeometry(0.012, 20),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthTest: false })
-  );
-  reticleDot.rotation.x = -Math.PI / 2;
-  reticleDot.position.y = 0.002;
-  reticleDot.frustumCulled = false;
-  reticle.add(reticleDot);
   scene.add(reticle);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -365,8 +352,8 @@ async function startSession(mode) {
     let session = null;
     try {
       session = await navigator.xr.requestSession("immersive-ar", {
-        requiredFeatures: ["local", "hit-test"],
-        optionalFeatures: ["dom-overlay", "dom-overlay-for-handheld-ar", "local-floor"],
+        requiredFeatures: ["hit-test"],
+        optionalFeatures: ["dom-overlay", "dom-overlay-for-handheld-ar"],
         domOverlay: { root: ui.overlay },
       });
     } catch (err) {
@@ -1228,48 +1215,31 @@ function noteTracking(ok) {
   if (ok) state.sawTracking = true;
 }
 
-async function setupHitTest(session) {
-  hitTestSourceRequested = true;
-  const viewerSpace = await session.requestReferenceSpace("viewer");
-  hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
-}
+const _reticleScale = new THREE.Vector3(1, 1, 1);
 
-function ensureHitTest(frame) {
-  if (!frame || state.mode !== "ar" || hitTestSourceRequested) return;
-  setupHitTest(frame.session).catch((err) => {
-    console.error(err);
-    hitTestSourceRequested = false;
-    aimMessage = "No se pudo crear el detector de superficies.";
-  });
-}
-
-function showSmoothedAim(now, dt, horizontal) {
-  if (!smoothReady || smoothPos.distanceTo(aimPoint) > 0.4) {
+function applyReticleMatrix(matrix) {
+  matrix.decompose(aimPoint, aimQuat, _v1);
+  if (!smoothReady || smoothPos.distanceTo(aimPoint) > 0.45) {
     smoothPos.copy(aimPoint);
     smoothQuat.copy(aimQuat);
     smoothReady = true;
   } else {
-    const alpha = 1 - Math.exp(-Math.max(dt, 0.001) / 0.07);
+    const alpha = 1 - Math.exp(-0.016 / 0.045);
     smoothPos.lerp(aimPoint, alpha);
     smoothQuat.slerp(aimQuat, alpha);
   }
-  lastHitAt = now;
-  lastHorizontal = horizontal;
-  reticle.matrixAutoUpdate = true;
-  reticle.position.copy(smoothPos);
-  reticle.quaternion.copy(smoothQuat);
-  reticle.scale.set(1, 1, 1);
+  lastHitAt = performance.now();
+  reticle.matrix.compose(smoothPos, smoothQuat, _reticleScale);
+  reticle.matrixAutoUpdate = false;
   reticle.matrixWorldNeedsUpdate = true;
   reticle.visible = true;
   aimPoint.copy(smoothPos);
   aimNormal.set(0, 1, 0).applyQuaternion(smoothQuat);
   if (aimNormal.y < 0) aimNormal.multiplyScalar(-1);
-  state.aimValid = horizontal;
-  reticle.material.color.setHex(horizontal ? 0xffffff : 0xffb15a);
+  state.aimValid = true;
 }
 
-function updateReticle(frame, now, dt) {
-  ensureHitTest(frame);
+function updateReticle(frame) {
   if (frame) sampleTracking(frame);
 
   if (state.phase !== "placing") {
@@ -1278,18 +1248,15 @@ function updateReticle(frame, now, dt) {
   }
 
   if (state.mode === "preview") {
-    reticle.matrixAutoUpdate = true;
     raycaster.setFromCamera(ndc.set(0, 0), camera);
     const hit = raycaster.ray.intersectPlane(floorPlane, _v1);
-    state.aimValid = !!hit;
     if (hit) {
-      aimPoint.copy(_v1);
-      aimQuat.identity();
-      aimNormal.set(0, 1, 0);
-      showSmoothedAim(now, dt, true);
+      _m1.compose(_v1, _q1.identity(), _reticleScale);
+      applyReticleMatrix(_m1);
       aimMessage = "Superficie encontrada. Toca para colocar el objetivo.";
     } else {
       reticle.visible = false;
+      state.aimValid = false;
       aimMessage = "Apunta el centro a la mesa.";
     }
     noteTracking(true);
@@ -1297,48 +1264,53 @@ function updateReticle(frame, now, dt) {
     return;
   }
 
-  if (!frame || !hitTestSource) {
-    state.aimValid = false;
+  if (!frame) {
     reticle.visible = false;
-    aimMessage = "Preparando el detector. Mueve el teléfono un momento.";
+    state.aimValid = false;
     refreshAimText();
     return;
   }
+
   const referenceSpace = renderer.xr.getReferenceSpace();
-  if (!referenceSpace) {
-    state.aimValid = false;
-    reticle.visible = false;
-    aimMessage = "Esperando la posición del teléfono…";
-    refreshAimText();
-    return;
+  const session = renderer.xr.getSession();
+
+  if (hitTestSourceRequested === false && session) {
+    session.requestReferenceSpace("viewer").then((viewerSpace) => {
+      session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+        hitTestSource = source;
+      });
+    });
+    session.addEventListener("end", () => {
+      hitTestSourceRequested = false;
+      hitTestSource = null;
+    });
+    hitTestSourceRequested = true;
   }
 
-  const hits = frame.getHitTestResults(hitTestSource);
-  let hitPose = null;
-  if (hits.length) hitPose = hits[0].getPose(referenceSpace);
-  if (hitPose) {
-    _m1.fromArray(hitPose.transform.matrix);
-    _m1.decompose(aimPoint, aimQuat, _v1);
-    const normalY = Math.abs(_v2.setFromMatrixColumn(_m1, 1).y);
-    const horizontal = normalY > 0.35;
-    showSmoothedAim(now, dt, horizontal);
-    aimMessage = horizontal
-      ? "Superficie encontrada. Toca para colocar el objetivo."
-      : "Apunta más hacia la mesa o el suelo.";
-    refreshAimText();
-    return;
+  if (hitTestSource && referenceSpace) {
+    const hitTestResults = frame.getHitTestResults(hitTestSource);
+    if (hitTestResults.length) {
+      const hit = hitTestResults[0];
+      const pose = hit.getPose(referenceSpace);
+      if (pose) {
+        _m1.fromArray(pose.transform.matrix);
+        applyReticleMatrix(_m1);
+        aimMessage = "Superficie encontrada. Toca para colocar el objetivo.";
+        refreshAimText();
+        return;
+      }
+    }
   }
 
-  if (smoothReady && now - lastHitAt < 160) {
+  if (smoothReady && performance.now() - lastHitAt < 120) {
     reticle.visible = true;
-    state.aimValid = lastHorizontal;
-    aimMessage = lastHorizontal
-      ? "Superficie encontrada. Toca para colocar el objetivo."
-      : "Apunta más hacia la mesa o el suelo.";
+    state.aimValid = true;
   } else {
-    state.aimValid = false;
     reticle.visible = false;
-    aimMessage = "Mueve el teléfono de lado a lado, apuntando a la mesa o al suelo.";
+    state.aimValid = false;
+    aimMessage = hitTestSource
+      ? "Mueve el teléfono de lado a lado, apuntando a la mesa o al suelo."
+      : "Preparando el detector. Mueve el teléfono un momento.";
   }
   refreshAimText();
 }
@@ -1366,7 +1338,7 @@ function animate(timestamp, frame) {
   const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
   lastFrameTime = now;
 
-  updateReticle(frame, now, dt || 0.016);
+  updateReticle(frame);
 
   updateCarry(dt || 0.016);
   checkDock(now);
