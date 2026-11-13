@@ -9,9 +9,9 @@ const STORAGE_KEY = "a4xr-docking-v1";
 const NOTES_KEY = "a4xr-notes-v1";
 
 const SHAPES = [
-  { id: "arrow", name: "Flecha", color: 0xe23d3d },
-  { id: "wedge", name: "Cuña", color: 0xf2c14e },
-  { id: "lshape", name: "Ele", color: 0x2f6fed },
+  { id: "cylinder", name: "Cilindro", color: 0xe23d3d },
+  { id: "cube", name: "Cubo", color: 0xf2c14e },
+  { id: "cone", name: "Cono", color: 0x2f6fed },
 ];
 
 const COLS = [
@@ -114,10 +114,9 @@ const gesture = {
 const carryAnchor = {
   camPos: new THREE.Vector3(),
   objPos: new THREE.Vector3(),
-  camQuat: new THREE.Quaternion(),
-  objQuat: new THREE.Quaternion(),
+  camYaw: 0,
+  objYaw: 0,
 };
-const _euler = new THREE.Euler();
 
 const plane = {
   ready: false,
@@ -481,7 +480,7 @@ function setPhase(phase) {
   ui.rotate.hidden = ui.carry.hidden;
   if (ui.previewHint) ui.previewHint.hidden = state.mode !== "preview" || !manipulating;
   ui.crosshair.hidden = true;
-  if (!ui.carry.hidden && !state.carryHeld) ui.carry.textContent = "Mantener";
+  if (!ui.carry.hidden && !state.carryHeld) ui.carry.textContent = "Desplazar";
   if (!ui.rotate.hidden && !state.rotHeld) ui.rotate.textContent = "Rotar";
   ui.carry.classList.toggle("held", state.carryHeld);
   ui.rotate.classList.toggle("held", state.rotHeld);
@@ -514,8 +513,8 @@ function updateInstruction() {
   } else if (state.phase === "docking") {
     const name = state.selected ? state.selected.userData.name : "";
     ui.instruction.textContent = state.technique === "touch"
-      ? "Un dedo mueve la figura en el espacio. Dos dedos la giran en los tres ejes."
-      : "Mantener desplaza la figura contigo, sin cambiar su tamaño. Rotar la gira con el teléfono.";
+      ? "Un dedo mueve la figura. Dos dedos la giran sobre la vertical, igual desde cualquier lado."
+      : "Desplazar mueve la figura contigo. Rotar la gira sobre la vertical, sin inclinarla.";
     ui.detail.textContent = `Seleccionado: ${name}. Incorrectas: ${state.wrong}. ${proximityText()}`;
     ui.status.classList.add("warn");
   } else if (state.phase === "success") {
@@ -525,14 +524,10 @@ function updateInstruction() {
   }
 }
 
-function orientationError(a, b) {
-  return a.angleTo(b);
-}
-
 function proximityText() {
   if (!state.selected || !ghost) return "";
   const pos = state.selected.position.distanceTo(ghost.position);
-  const ang = orientationError(state.selected.quaternion, ghost.quaternion);
+  const ang = angleDiff(state.selected.userData.yaw, ghost.userData.yaw);
   if (pos <= POS_TOL_M && ang <= YAW_TOL) return "Quédate quieto…";
   if (pos < 0.08 && ang < THREE.MathUtils.degToRad(30)) return "Cerca.";
   return "Lejos.";
@@ -618,8 +613,12 @@ function planarDistance(a, b) {
   return _v1.length();
 }
 
+function angleDiffSigned(a, b) {
+  return Math.atan2(Math.sin(a - b), Math.cos(a - b));
+}
+
 function angleDiff(a, b) {
-  return Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+  return Math.abs(angleDiffSigned(a, b));
 }
 
 function lerpAngle(a, b, t) {
@@ -641,54 +640,38 @@ function makeMaterial(color, opacity) {
   });
 }
 
-function addNose(group) {
-  const nose = new THREE.Mesh(
-    new THREE.SphereGeometry(0.007, 14, 14),
+function addHeadingMark(root) {
+  const mark = new THREE.Mesh(
+    new THREE.SphereGeometry(0.014, 14, 14),
     new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.55, roughness: 0.3 })
   );
-  nose.position.set(0, 0.034, 0.055);
-  nose.userData.fixedMaterial = true;
-  nose.raycast = () => {};
-  group.add(nose);
+  mark.position.set(0, SHAPE_SPAN_M * 0.78, SHAPE_SPAN_M * 0.28);
+  mark.userData.fixedMaterial = true;
+  mark.raycast = () => {};
+  root.add(mark);
 }
 
-function buildArrow() {
-  const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.046, 0.026, 0.055));
-  body.position.set(0, 0.013, -0.012);
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.034, 0.05, 4));
-  head.geometry.rotateX(Math.PI / 2);
-  head.position.set(0, 0.016, 0.04);
-  group.add(body, head);
-  return group;
-}
-
-function buildWedge() {
-  const shape = new THREE.Shape();
-  shape.moveTo(0, 0);
-  shape.lineTo(0.1, 0);
-  shape.lineTo(0, 0.048);
-  const geom = new THREE.ExtrudeGeometry(shape, { depth: 0.06, bevelEnabled: false });
-  geom.translate(0, 0, -0.03);
-  geom.rotateY(Math.PI / 2);
-  geom.computeVertexNormals();
-  const mesh = new THREE.Mesh(geom);
+function buildPrimitive(geometry) {
+  const mesh = new THREE.Mesh(geometry);
+  mesh.position.y = 0.06;
   const group = new THREE.Group();
   group.add(mesh);
   return group;
 }
 
-function buildL() {
-  const group = new THREE.Group();
-  const longArm = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.026, 0.032));
-  longArm.position.set(0.01, 0.013, -0.012);
-  const foot = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.026, 0.07));
-  foot.position.set(-0.03, 0.013, 0.028);
-  group.add(longArm, foot);
-  return group;
+function buildCylinder() {
+  return buildPrimitive(new THREE.CylinderGeometry(0.06, 0.06, 0.12, 28));
 }
 
-const BUILDERS = { arrow: buildArrow, wedge: buildWedge, lshape: buildL };
+function buildCube() {
+  return buildPrimitive(new THREE.BoxGeometry(0.12, 0.12, 0.12));
+}
+
+function buildCone() {
+  return buildPrimitive(new THREE.ConeGeometry(0.06, 0.12, 28));
+}
+
+const BUILDERS = { cylinder: buildCylinder, cube: buildCube, cone: buildCone };
 
 function groundCenter(group) {
   group.position.set(0, 0, 0);
@@ -780,10 +763,10 @@ function ghostFloorRing(colorHex) {
 function createObject(shape, opacity) {
   const root = new THREE.Group();
   const body = BUILDERS[shape.id]();
-  addNose(body);
   groundCenter(body);
   normalizeShapeSpan(body, SHAPE_SPAN_M);
   root.add(body);
+  addHeadingMark(root);
   paint(body, shape.color, opacity);
   root.userData.shapeId = shape.id;
   root.userData.name = shape.name;
@@ -863,15 +846,7 @@ function spawnTrial() {
     obj.userData.ring = selectionRing(0xfff4d2);
     obj.add(obj.userData.ring);
     obj.add(pickVolume());
-    applyPose(obj, pointOnPlane(spots[i].x, spots[i].z), 0);
-    _euler.set(
-      (Math.random() - 0.5) * 0.9,
-      Math.random() * Math.PI * 2,
-      (Math.random() - 0.5) * 0.9,
-      "YXZ"
-    );
-    obj.quaternion.setFromEuler(_euler);
-    lockScale(obj);
+    applyPose(obj, pointOnPlane(spots[i].x, spots[i].z), Math.random() * Math.PI * 2);
     scene.add(obj);
     return obj;
   });
@@ -970,11 +945,18 @@ function panSelected(dxPx, dyPx) {
   lockScale(state.selected);
 }
 
-function spinSelected(axis, angle) {
-  if (!state.selected || !angle) return;
-  _q1.setFromAxisAngle(axis, angle);
-  state.selected.quaternion.premultiply(_q1);
-  lockScale(state.selected);
+function setYaw(object, yaw) {
+  const height = object.position.y;
+  applyPose(object, object.position, yaw);
+  object.position.y = height;
+  lockScale(object);
+}
+
+function cameraYaw() {
+  getCam().getWorldDirection(_v1);
+  _v1.y = 0;
+  if (_v1.lengthSq() < 1e-8) return 0;
+  return Math.atan2(_v1.x, _v1.z);
 }
 
 function updateCarry() {
@@ -984,20 +966,18 @@ function updateCarry() {
     cam.getWorldPosition(_v1);
     state.selected.position.copy(carryAnchor.objPos).add(_v2.copy(_v1).sub(carryAnchor.camPos));
     lockScale(state.selected);
+    setYaw(state.selected, state.selected.userData.yaw);
   }
   if (state.rotHeld && state.mode === "ar") {
-    cam.getWorldQuaternion(_q1);
-    _q2.copy(carryAnchor.camQuat).invert();
-    _q1.multiply(_q2);
-    state.selected.quaternion.copy(_q1).multiply(carryAnchor.objQuat);
-    lockScale(state.selected);
+    const delta = angleDiffSigned(cameraYaw(), carryAnchor.camYaw);
+    setYaw(state.selected, carryAnchor.objYaw + delta);
   }
 }
 
 function checkDock(now) {
   if (state.phase !== "docking" || !state.selected || !ghost) return;
   const posErr = state.selected.position.distanceTo(ghost.position);
-  const yawErr = orientationError(state.selected.quaternion, ghost.quaternion);
+  const yawErr = angleDiff(state.selected.userData.yaw, ghost.userData.yaw);
   const inside = posErr <= POS_TOL_M && yawErr <= YAW_TOL;
   if (inside) {
     if (!state.dockHoldStart) state.dockHoldStart = now;
@@ -1169,26 +1149,14 @@ function onPointerMove(e) {
   if (state.phase !== "docking" || state.technique !== "touch" || !state.selected) return;
 
   if (pointers.size >= 2 || (e.shiftKey && pointers.size === 1 && e.pointerType === "mouse")) {
-    const cam = getCam();
-    cam.getWorldQuaternion(_q1);
     if (pointers.size >= 2) {
       const ang = pointerAngle();
       let delta = ang - gesture.lastTwist;
       delta = Math.atan2(Math.sin(delta), Math.cos(delta));
       gesture.lastTwist = ang;
-      const mid = pointerMid();
-      const mdx = mid.x - gesture.lastMidX;
-      const mdy = mid.y - gesture.lastMidY;
-      gesture.lastMidX = mid.x;
-      gesture.lastMidY = mid.y;
-      spinSelected(_v1.set(0, 1, 0), -delta);
-      spinSelected(_v2.set(1, 0, 0).applyQuaternion(_q1), -mdy * 0.008);
-      spinSelected(_v3.set(0, 0, -1).applyQuaternion(_q1), mdx * 0.008);
-    } else if (e.altKey) {
-      spinSelected(_v3.set(0, 0, -1).applyQuaternion(_q1), -e.movementX * 0.01);
+      setYaw(state.selected, state.selected.userData.yaw - delta);
     } else {
-      spinSelected(_v1.set(0, 1, 0), -e.movementX * 0.01);
-      spinSelected(_v2.set(1, 0, 0).applyQuaternion(_q1), -e.movementY * 0.01);
+      setYaw(state.selected, state.selected.userData.yaw - e.movementX * 0.01);
     }
     gesture.twisting = true;
     gesture.dragging = false;
@@ -1280,7 +1248,7 @@ function onCarryUp(e) {
   if (!state.carryHeld) return;
   state.carryHeld = false;
   ui.carry.classList.remove("held");
-  ui.carry.textContent = "Mantener";
+  ui.carry.textContent = "Desplazar";
   if (e && ui.carry.hasPointerCapture?.(e.pointerId)) ui.carry.releasePointerCapture(e.pointerId);
 }
 
@@ -1291,10 +1259,10 @@ function onRotateDown(e) {
   try { ui.rotate.setPointerCapture(e.pointerId); } catch { /* hold still starts */ }
   state.carryHeld = false;
   ui.carry.classList.remove("held");
-  ui.carry.textContent = "Mantener";
+  ui.carry.textContent = "Desplazar";
   state.rotHeld = true;
-  getCam().getWorldQuaternion(carryAnchor.camQuat);
-  carryAnchor.objQuat.copy(state.selected.quaternion);
+  carryAnchor.camYaw = cameraYaw();
+  carryAnchor.objYaw = state.selected.userData.yaw || 0;
   ui.rotate.classList.add("held");
   ui.rotate.textContent = "Girando";
   countTouch();
@@ -1302,16 +1270,9 @@ function onRotateDown(e) {
 
 function onRotateMove(e) {
   if (!state.rotHeld || !state.selected || state.mode !== "preview") return;
-  const cam = getCam();
-  cam.getWorldQuaternion(_q1);
-  if (e.altKey) {
-    spinSelected(_v3.set(0, 0, -1).applyQuaternion(_q1), -e.movementX * 0.01);
-  } else {
-    spinSelected(_v1.set(0, 1, 0), -e.movementX * 0.01);
-    spinSelected(_v2.set(1, 0, 0).applyQuaternion(_q1), -e.movementY * 0.01);
-  }
-  carryAnchor.objQuat.copy(state.selected.quaternion);
-  cam.getWorldQuaternion(carryAnchor.camQuat);
+  setYaw(state.selected, state.selected.userData.yaw - e.movementX * 0.01);
+  carryAnchor.objYaw = state.selected.userData.yaw;
+  carryAnchor.camYaw = cameraYaw();
 }
 
 function onRotateUp(e) {
@@ -1513,8 +1474,8 @@ function onDebugKey(e) {
   else if (e.key === "ArrowRight") pos.addScaledVector(plane.xAxis, step);
   else if (e.key === "ArrowUp") pos.addScaledVector(plane.zAxis, -step);
   else if (e.key === "ArrowDown") pos.addScaledVector(plane.zAxis, step);
-  else if (e.key === "q" || e.key === "Q") spinSelected(_v1.set(0, 1, 0), -yawStep);
-  else if (e.key === "e" || e.key === "E") spinSelected(_v1.set(0, 1, 0), yawStep);
+  else if (e.key === "q" || e.key === "Q") setYaw(state.selected, state.selected.userData.yaw - yawStep);
+  else if (e.key === "e" || e.key === "E") setYaw(state.selected, state.selected.userData.yaw + yawStep);
   else return;
   e.preventDefault();
   if (e.key.startsWith("Arrow")) {

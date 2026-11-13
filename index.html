@@ -36,14 +36,14 @@
 
     <div id="bottom-bar" hidden>
       <div class="bar-row">
-        <button id="btn-carry" type="button" hidden>Mantener</button>
+        <button id="btn-carry" type="button" hidden>Desplazar</button>
         <button id="btn-rotate" type="button" hidden>Rotar</button>
       </div>
       <div class="bar-row">
         <button id="btn-restart" type="button" class="ghost">Reiniciar intento</button>
         <button id="btn-exit" type="button" class="ghost">Salir</button>
       </div>
-      <p id="preview-hint" hidden>Escritorio: arrastra para mirar antes de elegir. Con gestos, Shift+arrastrar gira y Alt+arrastrar inclina. Con carry, arrastra Mantener para mover y Rotar para girar.</p>
+      <p id="preview-hint" hidden>Escritorio: arrastra para mirar antes de elegir. Con gestos, Shift+arrastrar gira sobre la vertical. Con carry, arrastra Desplazar para mover y Rotar para girar.</p>
     </div>
 
     <section id="screen-setup" class="sheet">
@@ -68,7 +68,7 @@
           <input type="radio" name="technique" value="carry" />
           <span>
             <strong>Carry</strong>
-            <small>Mantener lo desplaza. Rotar lo gira en los tres ejes.</small>
+            <small>Desplazar lo mueve. Rotar lo gira sobre la vertical.</small>
           </span>
         </label>
       </fieldset>
@@ -113,7 +113,7 @@
     </section>
   </div>
 
-  <script type="module" src="./js/app.js?v=19"></script>
+  <script type="module" src="./js/app.js?v=20"></script>
   <script>
     document.getElementById("btn-ar").disabled = false;
     setTimeout(function () {
