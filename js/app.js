@@ -138,15 +138,8 @@ let hitTestSource = null;
 let hitTestSourceRequested = false;
 let aimMessage = "Mueve el teléfono de lado a lado, apuntando a la mesa o al suelo.";
 const aimQuat = new THREE.Quaternion();
-const smoothPos = new THREE.Vector3();
-const smoothQuat = new THREE.Quaternion();
-let smoothReady = false;
-let lastHitAt = 0;
-
-function resetAimSmooth() {
-  smoothReady = false;
-  lastHitAt = 0;
-}
+const _reticleScale = new THREE.Vector3(1, 1, 1);
+const _normal = new THREE.Vector3();
 let ghost = null;
 let pieces = [];
 let lastFrameTime = performance.now();
@@ -184,12 +177,36 @@ function init() {
   grid.position.y = 0;
   scene.add(grid);
 
-  reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0xffffff })
-  );
+  reticle = new THREE.Group();
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
+  reticle.frustumCulled = false;
+  const disk = new THREE.Mesh(
+    new THREE.CircleGeometry(0.16, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xf1c40f,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      depthTest: false,
+    })
+  );
+  disk.rotation.x = -Math.PI / 2;
+  disk.renderOrder = 3;
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.155, 0.2, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xf1c40f,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      depthTest: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.002;
+  ring.renderOrder = 4;
+  reticle.add(disk, ring);
   scene.add(reticle);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -198,6 +215,7 @@ function init() {
   renderer.setClearColor(0x000000, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType("local");
   renderer.setAnimationLoop(animate);
   $("canvas-host").appendChild(renderer.domElement);
 
@@ -353,7 +371,7 @@ async function startSession(mode) {
     try {
       session = await navigator.xr.requestSession("immersive-ar", {
         requiredFeatures: ["hit-test"],
-        optionalFeatures: ["dom-overlay", "dom-overlay-for-handheld-ar"],
+        optionalFeatures: ["dom-overlay"],
         domOverlay: { root: ui.overlay },
       });
     } catch (err) {
@@ -365,6 +383,7 @@ async function startSession(mode) {
     try {
       renderer.xr.setReferenceSpaceType("local");
       await renderer.xr.setSession(session);
+      beginHitTest(session);
     } catch (err) {
       console.error(err);
       showXrStatus("La sesión AR no arrancó. " + (err && err.message ? err.message : ""), true);
@@ -383,8 +402,7 @@ async function startSession(mode) {
 }
 
 function onSessionEnd() {
-  hitTestSource = null;
-  hitTestSourceRequested = false;
+  cancelHitTest();
   state.carryHeld = false;
   const unexpected = state.mode === "ar" && !state.leaving;
   handlingSessionEnd = true;
@@ -406,7 +424,6 @@ function beginTrial() {
   state.sawTracking = false;
   state.trackingOk = true;
   plane.ready = false;
-  resetAimSmooth();
   gesture.dragging = false;
   gesture.twisting = false;
   gesture.moved = false;
@@ -441,9 +458,7 @@ function setPhase(phase) {
   ui.summary.hidden = phase !== "summary";
   ui.carry.hidden = !(phase === "docking" && state.technique === "carry");
   ui.previewHint.hidden = state.mode !== "preview" || !manipulating;
-  ui.crosshair.hidden = !(
-    phase === "placing" || (phase === "docking" && state.technique === "carry")
-  );
+  ui.crosshair.hidden = !(phase === "docking" && state.technique === "carry");
   if (!ui.carry.hidden && !state.carryHeld) ui.carry.textContent = "Mantener para llevar";
   ui.carry.classList.toggle("held", state.carryHeld);
 
@@ -466,8 +481,8 @@ function setPhase(phase) {
 
 function updateInstruction() {
   if (state.phase === "placing") {
-    ui.instruction.textContent = "Apunta el centro a una mesa o al suelo. Cuando aparezca el aro, toca para colocar el objetivo.";
-    ui.detail.textContent = state.aimValid ? "Superficie horizontal encontrada." : "Buscando una superficie horizontal…";
+    ui.instruction.textContent = "Apunta a una mesa o al suelo. Cuando el círculo se ponga verde, tócalo para dejar los objetos ahí.";
+    ui.detail.textContent = aimMessage;
     ui.status.classList.remove("warn");
   } else if (state.phase === "selecting") {
     ui.instruction.textContent = "Toca el objeto del mismo color y forma que el fantasma.";
@@ -829,11 +844,13 @@ function spawnTrial() {
 }
 
 function placeWorkspace() {
-  if (!state.aimValid) {
-    toast("Todavía no hay un plano. Mueve el teléfono despacio sobre la mesa.");
+  if (!state.aimValid || !reticle.visible) {
+    toast("El círculo sigue amarillo. Recorre la mesa hasta que se ponga verde.");
     return;
   }
-  setPlane(aimPoint, aimNormal);
+  reticle.updateMatrixWorld(true);
+  reticle.matrix.decompose(aimPoint, aimQuat, _v1);
+  setPlane(aimPoint, aimNormal.set(0, 1, 0));
   if (state.mode === "preview") {
     orbit.target.copy(plane.point);
     updatePreviewCamera();
@@ -856,6 +873,14 @@ function pieceFromHit(hits) {
 
 function onTap(clientX, clientY) {
   if (state.phase === "placing") {
+    if (!state.aimValid) {
+      toast("El círculo sigue amarillo. Mueve el teléfono sobre la mesa hasta que se ponga verde.");
+      return;
+    }
+    if (!tapHitsCircle(clientX, clientY)) {
+      toast("Toca el círculo verde para colocar los objetos.");
+      return;
+    }
     placeWorkspace();
     return;
   }
@@ -1215,28 +1240,89 @@ function noteTracking(ok) {
   if (ok) state.sawTracking = true;
 }
 
-const _reticleScale = new THREE.Vector3(1, 1, 1);
+function beginHitTest(session) {
+  cancelHitTest();
+  if (!session) return;
+  hitTestSourceRequested = true;
+  session.requestReferenceSpace("viewer").then((viewerSpace) => {
+    if (renderer.xr.getSession() !== session) return null;
+    return session.requestHitTestSource({ space: viewerSpace });
+  }).then((source) => {
+    if (source && renderer.xr.getSession() === session) hitTestSource = source;
+  }).catch((err) => {
+    console.warn("hit-test source failed", err);
+    hitTestSourceRequested = false;
+  });
+}
 
-function applyReticleMatrix(matrix) {
-  matrix.decompose(aimPoint, aimQuat, _v1);
-  if (!smoothReady || smoothPos.distanceTo(aimPoint) > 0.45) {
-    smoothPos.copy(aimPoint);
-    smoothQuat.copy(aimQuat);
-    smoothReady = true;
-  } else {
-    const alpha = 1 - Math.exp(-0.016 / 0.045);
-    smoothPos.lerp(aimPoint, alpha);
-    smoothQuat.slerp(aimQuat, alpha);
+function cancelHitTest() {
+  if (hitTestSource && typeof hitTestSource.cancel === "function") {
+    try { hitTestSource.cancel(); } catch { /* already cancelled with the session */ }
   }
-  lastHitAt = performance.now();
-  reticle.matrix.compose(smoothPos, smoothQuat, _reticleScale);
+  hitTestSource = null;
+  hitTestSourceRequested = false;
+}
+
+function setReticleColor(valid) {
+  const color = valid ? 0x3cba7a : 0xf1c40f;
+  reticle.traverse((obj) => {
+    if (obj.isMesh && obj.material && obj.material.color) obj.material.color.setHex(color);
+  });
+  ui.crosshair.classList.toggle("is-ready", valid);
+}
+
+function showHitReticle(matrix, horizontal) {
+  reticle.matrix.copy(matrix);
   reticle.matrixAutoUpdate = false;
   reticle.matrixWorldNeedsUpdate = true;
   reticle.visible = true;
-  aimPoint.copy(smoothPos);
-  aimNormal.set(0, 1, 0).applyQuaternion(smoothQuat);
+  reticle.matrix.decompose(aimPoint, aimQuat, _v1);
+  aimNormal.set(0, 1, 0).transformDirection(matrix);
   if (aimNormal.y < 0) aimNormal.multiplyScalar(-1);
-  state.aimValid = true;
+  state.aimValid = horizontal;
+  setReticleColor(horizontal);
+}
+
+function showSearchCircle() {
+  const cam = getCam();
+  cam.updateMatrixWorld();
+  cam.getWorldPosition(_v1);
+  cam.getWorldDirection(_v2);
+  _v3.copy(_v1).addScaledVector(_v2, 0.85);
+  _q1.setFromUnitVectors(_normal.set(0, 1, 0), _v2.negate());
+  _reticleScale.set(0.55, 0.55, 0.55);
+  reticle.matrix.compose(_v3, _q1, _reticleScale);
+  _reticleScale.set(1, 1, 1);
+  reticle.matrixAutoUpdate = false;
+  reticle.matrixWorldNeedsUpdate = true;
+  reticle.visible = true;
+  state.aimValid = false;
+  setReticleColor(false);
+}
+
+function isHorizontalHit(matrix) {
+  return Math.abs(_normal.set(0, 1, 0).transformDirection(matrix).y) >= 0.78;
+}
+
+function tapHitsCircle(clientX, clientY) {
+  if (!reticle.visible || !state.aimValid) return false;
+  reticle.updateMatrixWorld(true);
+  setRayFromClient(clientX, clientY);
+  if (raycaster.intersectObject(reticle, true).length > 0) return true;
+
+  const cam = getCam();
+  const center = _v1.setFromMatrixPosition(reticle.matrix);
+  _q1.setFromRotationMatrix(reticle.matrix);
+  const edge = _v2.copy(center).add(_normal.set(0.2, 0, 0).applyQuaternion(_q1));
+  center.project(cam);
+  edge.project(cam);
+  if (center.z < -1 || center.z > 1) return false;
+  const sx = (center.x * 0.5 + 0.5) * window.innerWidth;
+  const sy = (-center.y * 0.5 + 0.5) * window.innerHeight;
+  const ex = (edge.x * 0.5 + 0.5) * window.innerWidth;
+  const ey = (-edge.y * 0.5 + 0.5) * window.innerHeight;
+  const radius = Math.max(44, Math.hypot(ex - sx, ey - sy) * 1.45);
+  return Math.hypot(clientX - sx, clientY - sy) <= radius;
 }
 
 function updateReticle(frame) {
@@ -1244,6 +1330,7 @@ function updateReticle(frame) {
 
   if (state.phase !== "placing") {
     reticle.visible = false;
+    ui.crosshair.classList.remove("is-ready");
     return;
   }
 
@@ -1252,11 +1339,10 @@ function updateReticle(frame) {
     const hit = raycaster.ray.intersectPlane(floorPlane, _v1);
     if (hit) {
       _m1.compose(_v1, _q1.identity(), _reticleScale);
-      applyReticleMatrix(_m1);
-      aimMessage = "Superficie encontrada. Toca para colocar el objetivo.";
+      showHitReticle(_m1, true);
+      aimMessage = "Superficie plana. Toca el círculo verde.";
     } else {
-      reticle.visible = false;
-      state.aimValid = false;
+      showSearchCircle();
       aimMessage = "Apunta el centro a la mesa.";
     }
     noteTracking(true);
@@ -1264,54 +1350,31 @@ function updateReticle(frame) {
     return;
   }
 
-  if (!frame) {
-    reticle.visible = false;
-    state.aimValid = false;
-    refreshAimText();
-    return;
-  }
-
   const referenceSpace = renderer.xr.getReferenceSpace();
   const session = renderer.xr.getSession();
+  if (session && !hitTestSource && !hitTestSourceRequested) beginHitTest(session);
 
-  if (hitTestSourceRequested === false && session) {
-    session.requestReferenceSpace("viewer").then((viewerSpace) => {
-      session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-        hitTestSource = source;
-      });
-    });
-    session.addEventListener("end", () => {
-      hitTestSourceRequested = false;
-      hitTestSource = null;
-    });
-    hitTestSourceRequested = true;
-  }
-
-  if (hitTestSource && referenceSpace) {
+  if (frame && hitTestSource && referenceSpace) {
     const hitTestResults = frame.getHitTestResults(hitTestSource);
     if (hitTestResults.length) {
-      const hit = hitTestResults[0];
-      const pose = hit.getPose(referenceSpace);
+      const pose = hitTestResults[0].getPose(referenceSpace);
       if (pose) {
         _m1.fromArray(pose.transform.matrix);
-        applyReticleMatrix(_m1);
-        aimMessage = "Superficie encontrada. Toca para colocar el objetivo.";
+        const horizontal = isHorizontalHit(_m1);
+        showHitReticle(_m1, horizontal);
+        aimMessage = horizontal
+          ? "Superficie plana. Toca el círculo verde."
+          : "Esa superficie no es horizontal. Apunta a la mesa o al suelo.";
         refreshAimText();
         return;
       }
     }
   }
 
-  if (smoothReady && performance.now() - lastHitAt < 120) {
-    reticle.visible = true;
-    state.aimValid = true;
-  } else {
-    reticle.visible = false;
-    state.aimValid = false;
-    aimMessage = hitTestSource
-      ? "Mueve el teléfono de lado a lado, apuntando a la mesa o al suelo."
-      : "Preparando el detector. Mueve el teléfono un momento.";
-  }
+  showSearchCircle();
+  aimMessage = hitTestSource
+    ? "Mueve el teléfono de lado a lado sobre la mesa hasta que el círculo se ponga verde."
+    : "Preparando el detector. Mueve el teléfono un momento.";
   refreshAimText();
 }
 
