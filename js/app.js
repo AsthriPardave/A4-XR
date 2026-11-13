@@ -4,7 +4,7 @@ const POS_TOL_M = 0.02;
 const YAW_TOL = THREE.MathUtils.degToRad(10);
 const DOCK_HOLD_MS = 400;
 const CARRY_DISTANCE = 0.32;
-const SHAPE_SCALE = 2.2;
+const SHAPE_SPAN_M = 0.2;
 const TAP_SLOP_PX = 14;
 const STORAGE_KEY = "a4xr-docking-v1";
 const NOTES_KEY = "a4xr-notes-v1";
@@ -584,6 +584,7 @@ function applyPose(object, worldPos, yaw) {
   _q1.setFromRotationMatrix(_m1);
   _q2.setFromAxisAngle(plane.normal, yaw);
   object.quaternion.copy(_q2.multiply(_q1));
+  object.scale.set(1, 1, 1);
 }
 
 function planarDistance(a, b) {
@@ -667,7 +668,6 @@ const BUILDERS = { arrow: buildArrow, wedge: buildWedge, lshape: buildL };
 function groundCenter(group) {
   group.position.set(0, 0, 0);
   group.rotation.set(0, 0, 0);
-  group.scale.set(1, 1, 1);
   group.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(group);
   const center = box.getCenter(new THREE.Vector3());
@@ -676,6 +676,19 @@ function groundCenter(group) {
     child.position.z -= center.z;
     child.position.y -= box.min.y;
   });
+}
+
+function normalizeShapeSpan(group, targetSpan) {
+  group.scale.set(1, 1, 1);
+  group.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(group);
+  const size = box.getSize(_v1);
+  const span = Math.max(size.x, size.y, size.z);
+  if (span < 1e-6) return 1;
+  const uniform = targetSpan / span;
+  group.scale.set(uniform, uniform, uniform);
+  group.userData.uniformScale = uniform;
+  return uniform;
 }
 
 function paint(group, color, opacity) {
@@ -694,31 +707,67 @@ function setEmissive(group, hex, intensity) {
 }
 
 function selectionRing(color) {
+  const outer = SHAPE_SPAN_M * 0.38;
+  const inner = SHAPE_SPAN_M * 0.3;
   const ring = new THREE.Mesh(
-    new THREE.RingGeometry(0.062, 0.078, 40),
+    new THREE.RingGeometry(inner, outer, 40),
     new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.95 })
   );
   ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.003;
+  ring.position.y = 0.002;
   ring.raycast = () => {};
   ring.visible = false;
+  ring.userData.fixedScale = true;
   return ring;
 }
 
+function pickVolume() {
+  const radius = SHAPE_SPAN_M * 0.34;
+  const height = SHAPE_SPAN_M * 0.45;
+  const pick = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, height, 12),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+  );
+  pick.position.y = height * 0.5;
+  pick.userData.fixedScale = true;
+  return pick;
+}
+
+function ghostFloorRing(colorHex) {
+  const outer = SHAPE_SPAN_M * 0.42;
+  const inner = SHAPE_SPAN_M * 0.34;
+  const marker = new THREE.Mesh(
+    new THREE.RingGeometry(inner, outer, 40),
+    new THREE.MeshBasicMaterial({
+      color: colorHex,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.85,
+    })
+  );
+  marker.rotation.x = -Math.PI / 2;
+  marker.position.y = 0.002;
+  marker.raycast = () => {};
+  marker.userData.fixedScale = true;
+  return marker;
+}
+
 function createObject(shape, opacity) {
-  const group = BUILDERS[shape.id]();
-  addNose(group);
-  groundCenter(group);
-  group.scale.setScalar(SHAPE_SCALE);
-  paint(group, shape.color, opacity);
-  group.userData.shapeId = shape.id;
-  group.userData.name = shape.name;
-  group.userData.color = shape.color;
-  group.userData.yaw = 0;
-  group.traverse((obj) => {
-    obj.userData.piece = group;
+  const root = new THREE.Group();
+  const body = BUILDERS[shape.id]();
+  addNose(body);
+  groundCenter(body);
+  normalizeShapeSpan(body, SHAPE_SPAN_M);
+  root.add(body);
+  paint(body, shape.color, opacity);
+  root.userData.shapeId = shape.id;
+  root.userData.name = shape.name;
+  root.userData.color = shape.color;
+  root.userData.yaw = 0;
+  root.traverse((obj) => {
+    obj.userData.piece = root;
   });
-  return group;
+  return root;
 }
 
 function clearTaskObjects() {
@@ -779,19 +828,7 @@ function spawnTrial() {
     obj.raycast = () => {};
   });
   applyPose(ghost, targetPos, state.targetYaw);
-  const marker = new THREE.Mesh(
-    new THREE.RingGeometry(0.05, 0.062, 40),
-    new THREE.MeshBasicMaterial({
-      color: SHAPES[matchIndex].color,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.85,
-    })
-  );
-  marker.rotation.x = -Math.PI / 2;
-  marker.position.y = 0.002;
-  marker.raycast = () => {};
-  ghost.add(marker);
+  ghost.add(ghostFloorRing(SHAPES[matchIndex].color));
   scene.add(ghost);
 
   const spots = randomLayout();
@@ -800,12 +837,7 @@ function spawnTrial() {
     const obj = createObject(SHAPES[shapeIndex], 1);
     obj.userData.ring = selectionRing(0xfff4d2);
     obj.add(obj.userData.ring);
-    const pick = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.07, 0.07, 0.1, 10),
-      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
-    );
-    pick.position.y = 0.045;
-    obj.add(pick);
+    obj.add(pickVolume());
     applyPose(obj, pointOnPlane(spots[i].x, spots[i].z), Math.random() * Math.PI * 2);
     scene.add(obj);
     return obj;
