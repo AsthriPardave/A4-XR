@@ -3,7 +3,6 @@ import * as THREE from "three";
 const POS_TOL_M = 0.02;
 const YAW_TOL = THREE.MathUtils.degToRad(10);
 const DOCK_HOLD_MS = 400;
-const CARRY_DISTANCE = 0.32;
 const SHAPE_SPAN_M = 0.2;
 const TAP_SLOP_PX = 14;
 const STORAGE_KEY = "a4xr-docking-v1";
@@ -43,6 +42,7 @@ const ui = {
   toast: $("toast"),
   bottom: $("bottom-bar"),
   carry: $("btn-carry"),
+  rotate: $("btn-rotate"),
   restart: $("btn-restart"),
   exit: $("btn-exit"),
   previewHint: $("preview-hint"),
@@ -86,6 +86,7 @@ const state = {
   selectStarted: 0,
   dockHoldStart: 0,
   carryHeld: false,
+  rotHeld: false,
   selected: null,
   match: null,
   targetYaw: 0,
@@ -105,8 +106,18 @@ const gesture = {
   startY: 0,
   maxPointers: 0,
   lastTwist: 0,
+  lastMidX: 0,
+  lastMidY: 0,
   grabOffset: new THREE.Vector3(),
 };
+
+const carryAnchor = {
+  camPos: new THREE.Vector3(),
+  objPos: new THREE.Vector3(),
+  camQuat: new THREE.Quaternion(),
+  objQuat: new THREE.Quaternion(),
+};
+const _euler = new THREE.Euler();
 
 const plane = {
   ready: false,
@@ -233,6 +244,10 @@ function init() {
   ui.carry.addEventListener("pointermove", onCarryMove);
   ui.carry.addEventListener("pointerup", onCarryUp);
   ui.carry.addEventListener("pointercancel", onCarryUp);
+  ui.rotate.addEventListener("pointerdown", onRotateDown);
+  ui.rotate.addEventListener("pointermove", onRotateMove);
+  ui.rotate.addEventListener("pointerup", onRotateUp);
+  ui.rotate.addEventListener("pointercancel", onRotateUp);
   ui.restart.addEventListener("click", restartAttempt);
   ui.exit.addEventListener("click", exitToSetup);
   ui.btnAr.addEventListener("click", () => startSession("ar"));
@@ -330,6 +345,7 @@ function showSetup() {
   state.mode = "setup";
   state.leaving = false;
   state.carryHeld = false;
+  state.rotHeld = false;
   clearTaskObjects();
   reticle.visible = false;
   setFloorVisible(true);
@@ -407,6 +423,7 @@ async function startSession(mode) {
 function onSessionEnd() {
   cancelHitTest();
   state.carryHeld = false;
+  state.rotHeld = false;
   const unexpected = state.mode === "ar" && !state.leaving;
   handlingSessionEnd = true;
   if (unexpected) toast("La sesión AR terminó. Los ensayos ya guardados siguen en el navegador.");
@@ -424,6 +441,7 @@ function beginTrial() {
   state.selectStarted = 0;
   state.dockHoldStart = 0;
   state.carryHeld = false;
+  state.rotHeld = false;
   state.sawTracking = false;
   state.trackingOk = true;
   plane.ready = false;
@@ -460,10 +478,13 @@ function setPhase(phase) {
   ui.fatigue.hidden = phase !== "fatigue";
   ui.summary.hidden = phase !== "summary";
   ui.carry.hidden = !(phase === "docking" && state.technique === "carry");
+  ui.rotate.hidden = ui.carry.hidden;
   if (ui.previewHint) ui.previewHint.hidden = state.mode !== "preview" || !manipulating;
-  ui.crosshair.hidden = !(phase === "docking" && state.technique === "carry");
-  if (!ui.carry.hidden && !state.carryHeld) ui.carry.textContent = "Mantener para llevar";
+  ui.crosshair.hidden = true;
+  if (!ui.carry.hidden && !state.carryHeld) ui.carry.textContent = "Mantener";
+  if (!ui.rotate.hidden && !state.rotHeld) ui.rotate.textContent = "Rotar";
   ui.carry.classList.toggle("held", state.carryHeld);
+  ui.rotate.classList.toggle("held", state.rotHeld);
 
   const touchName = state.technique === "touch" ? "Gestos" : "Carry";
   ui.technique.textContent = touchName;
@@ -493,8 +514,8 @@ function updateInstruction() {
   } else if (state.phase === "docking") {
     const name = state.selected ? state.selected.userData.name : "";
     ui.instruction.textContent = state.technique === "touch"
-      ? "Un dedo mueve el objeto sobre la mesa. Dos dedos lo giran."
-      : "Mantén el botón y mueve el teléfono. El objeto va delante de ti y gira con él.";
+      ? "Un dedo mueve la figura en el espacio. Dos dedos la giran en los tres ejes."
+      : "Mantener desplaza la figura contigo, sin cambiar su tamaño. Rotar la gira con el teléfono.";
     ui.detail.textContent = `Seleccionado: ${name}. Incorrectas: ${state.wrong}. ${proximityText()}`;
     ui.status.classList.add("warn");
   } else if (state.phase === "success") {
@@ -504,12 +525,16 @@ function updateInstruction() {
   }
 }
 
+function orientationError(a, b) {
+  return a.angleTo(b);
+}
+
 function proximityText() {
   if (!state.selected || !ghost) return "";
-  const pos = planarDistance(state.selected.position, ghost.position);
-  const yaw = angleDiff(state.selected.userData.yaw, state.targetYaw);
-  if (pos <= POS_TOL_M && yaw <= YAW_TOL) return "Quédate quieto…";
-  if (pos < 0.08 && yaw < THREE.MathUtils.degToRad(30)) return "Cerca.";
+  const pos = state.selected.position.distanceTo(ghost.position);
+  const ang = orientationError(state.selected.quaternion, ghost.quaternion);
+  if (pos <= POS_TOL_M && ang <= YAW_TOL) return "Quédate quieto…";
+  if (pos < 0.08 && ang < THREE.MathUtils.degToRad(30)) return "Cerca.";
   return "Lejos.";
 }
 
@@ -838,7 +863,15 @@ function spawnTrial() {
     obj.userData.ring = selectionRing(0xfff4d2);
     obj.add(obj.userData.ring);
     obj.add(pickVolume());
-    applyPose(obj, pointOnPlane(spots[i].x, spots[i].z), Math.random() * Math.PI * 2);
+    applyPose(obj, pointOnPlane(spots[i].x, spots[i].z), 0);
+    _euler.set(
+      (Math.random() - 0.5) * 0.9,
+      Math.random() * Math.PI * 2,
+      (Math.random() - 0.5) * 0.9,
+      "YXZ"
+    );
+    obj.quaternion.setFromEuler(_euler);
+    lockScale(obj);
     scene.add(obj);
     return obj;
   });
@@ -919,47 +952,52 @@ function selectMatch(picked) {
   setPhase("docking");
 }
 
-function moveSelectedTo(point) {
-  if (!state.selected || !plane.ready) return;
-  projectToPlane(point, _v2);
-  applyPose(state.selected, _v2, state.selected.userData.yaw);
+function lockScale(object) {
+  object.scale.set(1, 1, 1);
 }
 
-function yawSelected(delta) {
+function panSelected(dxPx, dyPx) {
   if (!state.selected) return;
-  applyPose(state.selected, state.selected.position, state.selected.userData.yaw + delta);
-}
-
-function carryTarget(outPos) {
   const cam = getCam();
-  cam.getWorldPosition(_v1);
-  cam.getWorldDirection(_v2);
-  _v2.addScaledVector(plane.normal, -_v2.dot(plane.normal));
-  if (_v2.lengthSq() < 1e-4) {
-    _v2.set(0, 0, -1).applyQuaternion(cam.quaternion);
-    _v2.addScaledVector(plane.normal, -_v2.dot(plane.normal));
-  }
-  if (_v2.lengthSq() < 1e-6) _v2.copy(plane.zAxis);
-  _v2.normalize();
-  projectToPlane(_v1, outPos);
-  outPos.addScaledVector(_v2, CARRY_DISTANCE);
-  return Math.atan2(_v2.dot(plane.xAxis), _v2.dot(plane.zAxis));
+  const dist = Math.max(0.3, cam.getWorldPosition(_v1).distanceTo(state.selected.position));
+  const fov = THREE.MathUtils.degToRad(cam.fov || 70);
+  const worldPerPx = (2 * Math.tan(fov / 2) * dist) / window.innerHeight;
+  cam.getWorldQuaternion(_q1);
+  const right = _v2.set(1, 0, 0).applyQuaternion(_q1);
+  const up = _v3.set(0, 1, 0).applyQuaternion(_q1);
+  state.selected.position.addScaledVector(right, dxPx * worldPerPx);
+  state.selected.position.addScaledVector(up, -dyPx * worldPerPx);
+  lockScale(state.selected);
 }
 
-function updateCarry(dt) {
-  if (!state.carryHeld || state.phase !== "docking" || !state.selected || !plane.ready) return;
-  const yaw = carryTarget(_v1);
-  const current = state.selected.position;
-  const alpha = 1 - Math.exp(-dt * 14);
-  _v2.copy(current).lerp(_v1, alpha);
-  const nextYaw = lerpAngle(state.selected.userData.yaw, yaw, alpha);
-  applyPose(state.selected, _v2, nextYaw);
+function spinSelected(axis, angle) {
+  if (!state.selected || !angle) return;
+  _q1.setFromAxisAngle(axis, angle);
+  state.selected.quaternion.premultiply(_q1);
+  lockScale(state.selected);
+}
+
+function updateCarry() {
+  if (state.phase !== "docking" || !state.selected) return;
+  const cam = getCam();
+  if (state.carryHeld && state.mode === "ar") {
+    cam.getWorldPosition(_v1);
+    state.selected.position.copy(carryAnchor.objPos).add(_v2.copy(_v1).sub(carryAnchor.camPos));
+    lockScale(state.selected);
+  }
+  if (state.rotHeld && state.mode === "ar") {
+    cam.getWorldQuaternion(_q1);
+    _q2.copy(carryAnchor.camQuat).invert();
+    _q1.multiply(_q2);
+    state.selected.quaternion.copy(_q1).multiply(carryAnchor.objQuat);
+    lockScale(state.selected);
+  }
 }
 
 function checkDock(now) {
   if (state.phase !== "docking" || !state.selected || !ghost) return;
-  const posErr = planarDistance(state.selected.position, ghost.position);
-  const yawErr = angleDiff(state.selected.userData.yaw, state.targetYaw);
+  const posErr = state.selected.position.distanceTo(ghost.position);
+  const yawErr = orientationError(state.selected.quaternion, ghost.quaternion);
   const inside = posErr <= POS_TOL_M && yawErr <= YAW_TOL;
   if (inside) {
     if (!state.dockHoldStart) state.dockHoldStart = now;
@@ -998,6 +1036,7 @@ function completeDock(posErr, yawErr) {
   console.info("[A4]", row);
 
   state.carryHeld = false;
+  state.rotHeld = false;
   ui.carry.classList.remove("held");
   setEmissive(state.selected, 0x39d98a, 0.55);
   setEmissive(ghost, 0x39d98a, 0.7);
@@ -1109,16 +1148,14 @@ function onPointerDown(e) {
     gesture.dragging = false;
     gesture.twisting = true;
     gesture.lastTwist = pointerAngle();
+    const mid = pointerMid();
+    gesture.lastMidX = mid.x;
+    gesture.lastMidY = mid.y;
   }
 }
 
 function onPointerMove(e) {
-  if (!pointers.has(e.pointerId)) {
-    if (state.mode === "preview" && state.carryHeld && e.pointerType === "mouse") {
-      orbitBy(e.movementX, e.movementY);
-    }
-    return;
-  }
+  if (!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   const dx = e.clientX - gesture.startX;
   const dy = e.clientY - gesture.startY;
@@ -1132,14 +1169,26 @@ function onPointerMove(e) {
   if (state.phase !== "docking" || state.technique !== "touch" || !state.selected) return;
 
   if (pointers.size >= 2 || (e.shiftKey && pointers.size === 1 && e.pointerType === "mouse")) {
+    const cam = getCam();
+    cam.getWorldQuaternion(_q1);
     if (pointers.size >= 2) {
       const ang = pointerAngle();
       let delta = ang - gesture.lastTwist;
       delta = Math.atan2(Math.sin(delta), Math.cos(delta));
       gesture.lastTwist = ang;
-      yawSelected(-delta);
+      const mid = pointerMid();
+      const mdx = mid.x - gesture.lastMidX;
+      const mdy = mid.y - gesture.lastMidY;
+      gesture.lastMidX = mid.x;
+      gesture.lastMidY = mid.y;
+      spinSelected(_v1.set(0, 1, 0), -delta);
+      spinSelected(_v2.set(1, 0, 0).applyQuaternion(_q1), -mdy * 0.008);
+      spinSelected(_v3.set(0, 0, -1).applyQuaternion(_q1), mdx * 0.008);
+    } else if (e.altKey) {
+      spinSelected(_v3.set(0, 0, -1).applyQuaternion(_q1), -e.movementX * 0.01);
     } else {
-      yawSelected(-e.movementX * 0.01);
+      spinSelected(_v1.set(0, 1, 0), -e.movementX * 0.01);
+      spinSelected(_v2.set(1, 0, 0).applyQuaternion(_q1), -e.movementY * 0.01);
     }
     gesture.twisting = true;
     gesture.dragging = false;
@@ -1147,21 +1196,8 @@ function onPointerMove(e) {
   }
 
   if (pointers.size === 1 && gesture.moved && !gesture.twisting) {
-    if (!gesture.dragging) {
-      gesture.dragging = true;
-      setRayFromClient(e.clientX, e.clientY);
-      const hit = new THREE.Vector3();
-      if (raycaster.ray.intersectPlane(plane.three, hit)) {
-        gesture.grabOffset.copy(state.selected.position).sub(hit);
-      } else {
-        gesture.grabOffset.set(0, 0, 0);
-      }
-    }
-    setRayFromClient(e.clientX, e.clientY);
-    const hit = new THREE.Vector3();
-    if (raycaster.ray.intersectPlane(plane.three, hit)) {
-      moveSelectedTo(hit.add(gesture.grabOffset));
-    }
+    gesture.dragging = true;
+    panSelected(e.movementX, e.movementY);
   }
 }
 
@@ -1207,28 +1243,83 @@ function pointerAngle() {
   return Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
 }
 
+function pointerMid() {
+  const pts = [...pointers.values()];
+  if (!pts.length) return { x: 0, y: 0 };
+  let x = 0;
+  let y = 0;
+  pts.forEach((p) => {
+    x += p.x;
+    y += p.y;
+  });
+  return { x: x / pts.length, y: y / pts.length };
+}
+
 function onCarryDown(e) {
-  if (ui.carry.hidden) return;
+  if (ui.carry.hidden || !state.selected) return;
   e.preventDefault();
   e.stopPropagation();
   try { ui.carry.setPointerCapture(e.pointerId); } catch { /* the hold still starts if capture is unavailable */ }
+  state.rotHeld = false;
+  ui.rotate.classList.remove("held");
+  ui.rotate.textContent = "Rotar";
   state.carryHeld = true;
+  getCam().getWorldPosition(carryAnchor.camPos);
+  carryAnchor.objPos.copy(state.selected.position);
   ui.carry.classList.add("held");
-  ui.carry.textContent = "Llevando… suelta para dejarlo";
+  ui.carry.textContent = "Soltar";
   countTouch();
 }
 
 function onCarryMove(e) {
-  if (!state.carryHeld || state.mode !== "preview" || e.pointerType !== "mouse") return;
-  orbitBy(e.movementX, e.movementY);
+  if (!state.carryHeld || !state.selected) return;
+  if (state.mode === "preview") panSelected(e.movementX, e.movementY);
 }
 
 function onCarryUp(e) {
   if (!state.carryHeld) return;
   state.carryHeld = false;
   ui.carry.classList.remove("held");
-  ui.carry.textContent = "Mantener para llevar";
+  ui.carry.textContent = "Mantener";
   if (e && ui.carry.hasPointerCapture?.(e.pointerId)) ui.carry.releasePointerCapture(e.pointerId);
+}
+
+function onRotateDown(e) {
+  if (ui.rotate.hidden || !state.selected) return;
+  e.preventDefault();
+  e.stopPropagation();
+  try { ui.rotate.setPointerCapture(e.pointerId); } catch { /* hold still starts */ }
+  state.carryHeld = false;
+  ui.carry.classList.remove("held");
+  ui.carry.textContent = "Mantener";
+  state.rotHeld = true;
+  getCam().getWorldQuaternion(carryAnchor.camQuat);
+  carryAnchor.objQuat.copy(state.selected.quaternion);
+  ui.rotate.classList.add("held");
+  ui.rotate.textContent = "Girando";
+  countTouch();
+}
+
+function onRotateMove(e) {
+  if (!state.rotHeld || !state.selected || state.mode !== "preview") return;
+  const cam = getCam();
+  cam.getWorldQuaternion(_q1);
+  if (e.altKey) {
+    spinSelected(_v3.set(0, 0, -1).applyQuaternion(_q1), -e.movementX * 0.01);
+  } else {
+    spinSelected(_v1.set(0, 1, 0), -e.movementX * 0.01);
+    spinSelected(_v2.set(1, 0, 0).applyQuaternion(_q1), -e.movementY * 0.01);
+  }
+  carryAnchor.objQuat.copy(state.selected.quaternion);
+  cam.getWorldQuaternion(carryAnchor.camQuat);
+}
+
+function onRotateUp(e) {
+  if (!state.rotHeld) return;
+  state.rotHeld = false;
+  ui.rotate.classList.remove("held");
+  ui.rotate.textContent = "Rotar";
+  if (e && ui.rotate.hasPointerCapture?.(e.pointerId)) ui.rotate.releasePointerCapture(e.pointerId);
 }
 
 function noteTracking(ok) {
@@ -1422,11 +1513,14 @@ function onDebugKey(e) {
   else if (e.key === "ArrowRight") pos.addScaledVector(plane.xAxis, step);
   else if (e.key === "ArrowUp") pos.addScaledVector(plane.zAxis, -step);
   else if (e.key === "ArrowDown") pos.addScaledVector(plane.zAxis, step);
-  else if (e.key === "q" || e.key === "Q") yawSelected(-yawStep);
-  else if (e.key === "e" || e.key === "E") yawSelected(yawStep);
+  else if (e.key === "q" || e.key === "Q") spinSelected(_v1.set(0, 1, 0), -yawStep);
+  else if (e.key === "e" || e.key === "E") spinSelected(_v1.set(0, 1, 0), yawStep);
   else return;
   e.preventDefault();
-  if (e.key.startsWith("Arrow")) moveSelectedTo(pos);
+  if (e.key.startsWith("Arrow")) {
+    state.selected.position.copy(pos);
+    lockScale(state.selected);
+  }
 }
 
 function toast(message) {

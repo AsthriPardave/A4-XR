@@ -35,12 +35,15 @@
     <div id="toast" role="status"></div>
 
     <div id="bottom-bar" hidden>
-      <button id="btn-carry" type="button" hidden>Mantener para llevar</button>
+      <div class="bar-row">
+        <button id="btn-carry" type="button" hidden>Mantener</button>
+        <button id="btn-rotate" type="button" hidden>Rotar</button>
+      </div>
       <div class="bar-row">
         <button id="btn-restart" type="button" class="ghost">Reiniciar intento</button>
         <button id="btn-exit" type="button" class="ghost">Salir</button>
       </div>
-      <p id="preview-hint" hidden>Escritorio: arrastra para mirar antes de elegir. Con gestos, Shift+arrastrar gira. Con carry, arrastra el botón para mover la vista.</p>
+      <p id="preview-hint" hidden>Escritorio: arrastra para mirar antes de elegir. Con gestos, Shift+arrastrar gira y Alt+arrastrar inclina. Con carry, arrastra Mantener para mover y Rotar para girar.</p>
     </div>
 
     <section id="screen-setup" class="sheet">
@@ -65,7 +68,7 @@
           <input type="radio" name="technique" value="carry" />
           <span>
             <strong>Carry</strong>
-            <small>El objeto sigue al teléfono mientras mantienes el botón.</small>
+            <small>Mantener lo desplaza. Rotar lo gira en los tres ejes.</small>
           </span>
         </label>
       </fieldset>
@@ -110,7 +113,7 @@
     </section>
   </div>
 
-  <script type="module" src="./js/app.js?v=17"></script>
+  <script type="module" src="./js/app.js?v=19"></script>
   <script>
     document.getElementById("btn-ar").disabled = false;
     setTimeout(function () {

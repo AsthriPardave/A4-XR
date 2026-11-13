@@ -203,17 +203,28 @@ html, body {
   pointer-events: auto;
 }
 
-#btn-carry {
+#btn-carry,
+#btn-rotate {
+  flex: 1;
   min-height: 64px;
   border: 0;
   border-radius: 16px;
-  background: var(--carry);
-  color: #1d1608;
   font-size: 18px;
   font-weight: 700;
 }
 
-#btn-carry.held {
+#btn-carry {
+  background: var(--carry);
+  color: #1d1608;
+}
+
+#btn-rotate {
+  background: #d7e4ff;
+  color: #142033;
+}
+
+#btn-carry.held,
+#btn-rotate.held {
   background: #fff4d4;
   box-shadow: inset 0 0 0 3px #1d1608;
 }
