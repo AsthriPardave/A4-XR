@@ -3,6 +3,7 @@ import * as THREE from "three";
 const POS_TOL_M = 0.02;
 const YAW_TOL = THREE.MathUtils.degToRad(10);
 const DOCK_HOLD_MS = 400;
+const DOCK_GRACE_MS = 150;
 const SHAPE_SPAN_M = 0.2;
 const TAP_SLOP_PX = 14;
 const STORAGE_KEY = "a4xr-docking-v1";
@@ -84,7 +85,8 @@ const state = {
   touches: 0,
   trackingLost: 0,
   selectStarted: 0,
-  dockHoldStart: 0,
+  dockHoldStart: null,
+  dockOutsideSince: 0,
   carryHeld: false,
   rotHeld: false,
   selected: null,
@@ -439,7 +441,8 @@ function beginTrial() {
   state.touches = 0;
   state.trackingLost = 0;
   state.selectStarted = 0;
-  state.dockHoldStart = 0;
+  state.dockHoldStart = null;
+  state.dockOutsideSince = 0;
   state.carryHeld = false;
   state.rotHeld = false;
   state.sawTracking = false;
@@ -526,9 +529,8 @@ function updateInstruction() {
 }
 
 function proximityText() {
-  if (!state.selected || !ghost) return "";
-  const pos = state.selected.position.distanceTo(ghost.position);
-  const ang = orientationGap(state.selected, ghost);
+  if (!state.selected || !ghost || !dockMeasure) return "";
+  const { pos, ang } = dockMeasure;
   if (pos <= POS_TOL_M && ang <= YAW_TOL) return "Quédate quieto…";
   if (pos < 0.08 && ang < THREE.MathUtils.degToRad(30)) return "Cerca.";
   return "Lejos.";
@@ -643,8 +645,33 @@ function nudgeOrientation(object, dp, dy, dr) {
   object.userData.roll = _euler.z;
 }
 
+function headingYaw(q) {
+  _v1.set(0, 0, 1).applyQuaternion(q);
+  _v1.addScaledVector(plane.normal, -_v1.dot(plane.normal));
+  if (_v1.lengthSq() < 1e-6) {
+    _v1.set(1, 0, 0).applyQuaternion(q);
+    _v1.addScaledVector(plane.normal, -_v1.dot(plane.normal));
+  }
+  return Math.atan2(_v1.dot(plane.xAxis), _v1.dot(plane.zAxis));
+}
+
 function orientationGap(a, b) {
-  return a.quaternion.angleTo(b.quaternion);
+  a.getWorldQuaternion(_q1);
+  const yawA = headingYaw(_q1);
+  b.getWorldQuaternion(_q2);
+  const yawB = headingYaw(_q2);
+  return angleDiff(yawA, yawB);
+}
+
+let dockMeasure = null;
+
+function measureDock() {
+  state.selected.quaternion.normalize();
+  ghost.quaternion.normalize();
+  const pos = planarDistance(state.selected.position, ghost.position);
+  const ang = orientationGap(state.selected, ghost);
+  dockMeasure = { pos, ang };
+  return dockMeasure;
 }
 
 function planarDistance(a, b) {
@@ -993,7 +1020,8 @@ function onTap(clientX, clientY) {
 function selectMatch(picked) {
   state.selected = picked;
   state.selectStarted = performance.now();
-  state.dockHoldStart = 0;
+  state.dockHoldStart = null;
+  state.dockOutsideSince = 0;
   picked.userData.ring.visible = true;
   setEmissive(picked, 0xfff1c9, 0.45);
   beep(660, 0.06);
@@ -1038,7 +1066,7 @@ function updateCarry() {
     _q2.copy(carryAnchor.camQuat).invert();
     _q1.multiply(_q2);
     _q2.copy(_q1).multiply(carryAnchor.objQuat);
-    state.selected.quaternion.copy(_q2);
+    state.selected.quaternion.copy(_q2).normalize();
     state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
     lockScale(state.selected);
   }
@@ -1046,19 +1074,25 @@ function updateCarry() {
 
 function checkDock(now) {
   if (state.phase !== "docking" || !state.selected || !ghost) return;
-  const posErr = state.selected.position.distanceTo(ghost.position);
-  const yawErr = orientationGap(state.selected, ghost);
-  const inside = posErr <= POS_TOL_M && yawErr <= YAW_TOL;
+  const { pos, ang } = measureDock();
+  const inside = pos <= POS_TOL_M && ang <= YAW_TOL;
   if (inside) {
-    if (!state.dockHoldStart) state.dockHoldStart = now;
-    else if (now - state.dockHoldStart >= DOCK_HOLD_MS) completeDock(posErr, yawErr);
+    state.dockOutsideSince = 0;
+    if (state.dockHoldStart == null) state.dockHoldStart = now;
+    else if (now - state.dockHoldStart >= DOCK_HOLD_MS) completeDock(pos, ang);
+  } else if (state.dockHoldStart != null) {
+    if (!state.dockOutsideSince) state.dockOutsideSince = now;
+    if (now - state.dockOutsideSince > DOCK_GRACE_MS) {
+      state.dockHoldStart = null;
+      state.dockOutsideSince = 0;
+    }
   } else {
-    state.dockHoldStart = 0;
+    state.dockOutsideSince = 0;
   }
   if (debug) {
     debugEl.hidden = false;
     debugEl.textContent =
-      `pos ${(posErr * 100).toFixed(1)} cm\nyaw ${THREE.MathUtils.radToDeg(yawErr).toFixed(1)}°\n` +
+      `pos ${(pos * 100).toFixed(1)} cm\nyaw ${THREE.MathUtils.radToDeg(ang).toFixed(1)}°\n` +
       `tol 2 cm / 10°`;
   }
   if (state.phase === "docking") updateInstruction();
@@ -1082,7 +1116,11 @@ function completeDock(posErr, yawErr) {
   };
   const rows = loadRows();
   rows.push(row);
-  saveRows(rows);
+  try {
+    saveRows(rows);
+  } catch (err) {
+    console.warn("No se pudieron guardar los datos", err);
+  }
   console.info("[A4]", row);
 
   state.carryHeld = false;
