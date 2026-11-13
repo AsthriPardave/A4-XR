@@ -4,6 +4,7 @@ const POS_TOL_M = 0.02;
 const YAW_TOL = THREE.MathUtils.degToRad(10);
 const DOCK_HOLD_MS = 400;
 const CARRY_DISTANCE = 0.32;
+const SHAPE_SCALE = 2.2;
 const TAP_SLOP_PX = 14;
 const STORAGE_KEY = "a4xr-docking-v1";
 const NOTES_KEY = "a4xr-notes-v1";
@@ -235,7 +236,7 @@ function init() {
   ui.restart.addEventListener("click", restartAttempt);
   ui.exit.addEventListener("click", exitToSetup);
   ui.btnAr.addEventListener("click", () => startSession("ar"));
-  ui.btnPreview.addEventListener("click", () => startSession("preview"));
+  if (ui.btnPreview) ui.btnPreview.addEventListener("click", () => startSession("preview"));
   ui.next.addEventListener("click", onNextTrial);
   ui.fatigue.querySelectorAll("button").forEach((btn) => {
     btn.addEventListener("click", () => answerFatigue(Number(btn.dataset.score)));
@@ -245,10 +246,11 @@ function init() {
   ui.btnSetup.addEventListener("click", () => showSetup());
   ui.btnClear.addEventListener("click", clearData);
   ui.participant.addEventListener("input", refreshSetupButtons);
-  ui.notes.addEventListener("input", () => localStorage.setItem(NOTES_KEY, ui.notes.value));
-
-  const savedNotes = localStorage.getItem(NOTES_KEY);
-  if (savedNotes) ui.notes.value = savedNotes;
+  if (ui.notes) {
+    ui.notes.addEventListener("input", () => localStorage.setItem(NOTES_KEY, ui.notes.value));
+    const savedNotes = localStorage.getItem(NOTES_KEY);
+    if (savedNotes) ui.notes.value = savedNotes;
+  }
 
   renderer.xr.addEventListener("sessionend", onSessionEnd);
   document.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -295,7 +297,7 @@ async function detectXR() {
   }
   showXrStatus(
     state.xrSupported
-      ? "AR listo. Escribe el código y pulsa Entrar en AR."
+      ? "AR listo."
       : "Este Chrome no puede abrir una sesión AR. Instala Google Play Services for AR y actualiza Chrome.",
     !state.xrSupported
   );
@@ -304,10 +306,11 @@ async function detectXR() {
 
 function refreshSetupButtons() {
   ui.btnAr.disabled = false;
-  ui.btnPreview.disabled = false;
+  if (ui.btnPreview) ui.btnPreview.disabled = false;
 }
 
 function refreshSavedStatus() {
+  if (!ui.savedStatus) return;
   const rows = loadRows();
   ui.savedStatus.textContent = rows.length
     ? `Ensayos guardados en este navegador: ${rows.length}.`
@@ -345,7 +348,7 @@ function showSetup() {
 function readSetup() {
   state.participant = ui.participant.value.trim();
   state.technique = document.querySelector('input[name="technique"]:checked').value;
-  localStorage.setItem(NOTES_KEY, ui.notes.value.trim());
+  if (ui.notes) localStorage.setItem(NOTES_KEY, ui.notes.value.trim());
 }
 
 async function startSession(mode) {
@@ -457,7 +460,7 @@ function setPhase(phase) {
   ui.fatigue.hidden = phase !== "fatigue";
   ui.summary.hidden = phase !== "summary";
   ui.carry.hidden = !(phase === "docking" && state.technique === "carry");
-  ui.previewHint.hidden = state.mode !== "preview" || !manipulating;
+  if (ui.previewHint) ui.previewHint.hidden = state.mode !== "preview" || !manipulating;
   ui.crosshair.hidden = !(phase === "docking" && state.technique === "carry");
   if (!ui.carry.hidden && !state.carryHeld) ui.carry.textContent = "Mantener para llevar";
   ui.carry.classList.toggle("held", state.carryHeld);
@@ -614,7 +617,7 @@ function makeMaterial(color, opacity) {
 
 function addNose(group) {
   const nose = new THREE.Mesh(
-    new THREE.SphereGeometry(0.012, 14, 14),
+    new THREE.SphereGeometry(0.007, 14, 14),
     new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.55, roughness: 0.3 })
   );
   nose.position.set(0, 0.034, 0.055);
@@ -690,38 +693,6 @@ function setEmissive(group, hex, intensity) {
   });
 }
 
-function makeLabel(text, colorHex) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 64;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "rgba(0,0,0,0.5)";
-  roundRect(ctx, 8, 8, 240, 48, 12);
-  ctx.fill();
-  ctx.fillStyle = "#" + colorHex.toString(16).padStart(6, "0");
-  ctx.font = "700 32px sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, 128, 34);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
-  sprite.scale.set(0.15, 0.038, 1);
-  sprite.position.y = 0.1;
-  sprite.raycast = () => {};
-  return sprite;
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
 function selectionRing(color) {
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(0.062, 0.078, 40),
@@ -738,6 +709,7 @@ function createObject(shape, opacity) {
   const group = BUILDERS[shape.id]();
   addNose(group);
   groundCenter(group);
+  group.scale.setScalar(SHAPE_SCALE);
   paint(group, shape.color, opacity);
   group.userData.shapeId = shape.id;
   group.userData.name = shape.name;
@@ -774,24 +746,24 @@ function randomLayout() {
     const spin = Math.random() * Math.PI * 2;
     const spots = [0, 2.15, 4.25].map((base) => {
       const a = base + spin + (Math.random() - 0.5) * 0.45;
-      const d = 0.32 + Math.random() * 0.16;
+      const d = 0.34 + Math.random() * 0.05;
       return { x: Math.cos(a) * d, z: Math.sin(a) * d };
     });
-    const farFromTarget = spots.every((s) => Math.hypot(s.x, s.z) >= 0.3 && Math.hypot(s.x, s.z) <= 0.5);
+    const nearTarget = spots.every((s) => Math.hypot(s.x, s.z) >= 0.33 && Math.hypot(s.x, s.z) <= 0.41);
     let separated = true;
     for (let i = 0; i < spots.length; i++) {
       for (let j = i + 1; j < spots.length; j++) {
         const dx = spots[i].x - spots[j].x;
         const dz = spots[i].z - spots[j].z;
-        if (Math.hypot(dx, dz) < 0.16) separated = false;
+        if (Math.hypot(dx, dz) < 0.3) separated = false;
       }
     }
-    if (farFromTarget && separated) return spots;
+    if (nearTarget && separated) return spots;
   }
   return [
-    { x: 0.38, z: 0.05 },
-    { x: -0.22, z: 0.34 },
-    { x: -0.2, z: -0.32 },
+    { x: 0.36, z: 0.04 },
+    { x: -0.2, z: 0.31 },
+    { x: -0.18, z: -0.32 },
   ];
 }
 
@@ -807,9 +779,8 @@ function spawnTrial() {
     obj.raycast = () => {};
   });
   applyPose(ghost, targetPos, state.targetYaw);
-  ghost.add(makeLabel("OBJETIVO", SHAPES[matchIndex].color));
   const marker = new THREE.Mesh(
-    new THREE.RingGeometry(0.07, 0.082, 40),
+    new THREE.RingGeometry(0.05, 0.062, 40),
     new THREE.MeshBasicMaterial({
       color: SHAPES[matchIndex].color,
       side: THREE.DoubleSide,

@@ -46,7 +46,6 @@
     <section id="screen-setup" class="sheet">
       <p class="eyebrow">MAC0623 · Assignment 4</p>
       <h1>Docking en AR</h1>
-      <p class="lead">Escribe un código y pulsa Entrar en AR. El botón no se apaga: si algo falla, el motivo sale aquí abajo.</p>
 
       <label class="field">
         <span>Participante (código, no el nombre)</span>
@@ -75,16 +74,7 @@
 
       <div class="actions">
         <button id="btn-ar" type="button" class="primary">Entrar en AR</button>
-        <button id="btn-preview" type="button" class="secondary">Vista previa en escritorio</button>
       </div>
-
-      <label class="field">
-        <span>Superficie e iluminación (para el informe)</span>
-        <textarea id="notes" rows="2" placeholder="Mesa clara, luz de techo, sin sol directo"></textarea>
-      </label>
-
-      <p id="saved-status" class="status"></p>
-      <p class="hint">Contrabalanceo: el participante impar empieza por Gestos; el par, por Carry. El segundo bloque es la otra técnica.</p>
     </section>
 
     <section id="screen-success" class="sheet sheet-compact" hidden>
@@ -120,7 +110,7 @@
     </section>
   </div>
 
-  <script type="module" src="./js/app.js?v=12"></script>
+  <script type="module" src="./js/app.js?v=16"></script>
   <script>
     document.getElementById("btn-ar").disabled = false;
     setTimeout(function () {
