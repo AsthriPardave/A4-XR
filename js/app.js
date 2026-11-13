@@ -114,9 +114,14 @@ const gesture = {
 const carryAnchor = {
   camPos: new THREE.Vector3(),
   objPos: new THREE.Vector3(),
+  camPitch: 0,
   camYaw: 0,
+  camRoll: 0,
+  objPitch: 0,
   objYaw: 0,
+  objRoll: 0,
 };
+const _euler = new THREE.Euler();
 
 const plane = {
   ready: false,
@@ -513,8 +518,8 @@ function updateInstruction() {
   } else if (state.phase === "docking") {
     const name = state.selected ? state.selected.userData.name : "";
     ui.instruction.textContent = state.technique === "touch"
-      ? "Un dedo mueve la figura. Dos dedos la giran sobre la vertical, igual desde cualquier lado."
-      : "Desplazar mueve la figura contigo. Rotar la gira sobre la vertical, sin inclinarla.";
+      ? "Un dedo mueve la figura sobre la mesa, sin cambiar su tamaño. Dos dedos la inclinan y la giran."
+      : "Desplazar la mueve sobre la mesa, siempre del mismo tamaño. Rotar cambia su inclinación.";
     ui.detail.textContent = `Seleccionado: ${name}. Incorrectas: ${state.wrong}. ${proximityText()}`;
     ui.status.classList.add("warn");
   } else if (state.phase === "success") {
@@ -527,7 +532,7 @@ function updateInstruction() {
 function proximityText() {
   if (!state.selected || !ghost) return "";
   const pos = state.selected.position.distanceTo(ghost.position);
-  const ang = angleDiff(state.selected.userData.yaw, ghost.userData.yaw);
+  const ang = orientationGap(state.selected, ghost);
   if (pos <= POS_TOL_M && ang <= YAW_TOL) return "Quédate quieto…";
   if (pos < 0.08 && ang < THREE.MathUtils.degToRad(30)) return "Cerca.";
   return "Lejos.";
@@ -596,15 +601,47 @@ function pointOnPlane(x, z, target = new THREE.Vector3()) {
     .addScaledVector(plane.zAxis, z);
 }
 
-function applyPose(object, worldPos, yaw) {
+function randomTilt() {
+  const spread = THREE.MathUtils.degToRad(55);
+  return {
+    pitch: (Math.random() - 0.5) * 2 * spread,
+    yaw: Math.random() * Math.PI * 2,
+    roll: (Math.random() - 0.5) * 2 * spread,
+  };
+}
+
+function applyOrientation(object) {
+  _euler.set(object.userData.pitch || 0, object.userData.yaw || 0, object.userData.roll || 0, "YXZ");
+  object.quaternion.setFromEuler(_euler);
+  lockScale(object);
+}
+
+function placeObject(object, worldPos, pitch, yaw, roll) {
+  object.position.copy(worldPos);
+  object.position.y = plane.point.y + 0.001;
+  object.userData.pitch = pitch;
   object.userData.yaw = yaw;
-  const dist = plane.three.distanceToPoint(worldPos);
-  object.position.copy(worldPos).addScaledVector(plane.normal, -dist + 0.001);
-  _m1.makeBasis(plane.xAxis, plane.normal, plane.zAxis);
-  _q1.setFromRotationMatrix(_m1);
-  _q2.setFromAxisAngle(plane.normal, yaw);
-  object.quaternion.copy(_q2.multiply(_q1));
-  object.scale.set(1, 1, 1);
+  object.userData.roll = roll;
+  applyOrientation(object);
+}
+
+function nudgeOrientation(object, dp, dy, dr) {
+  object.userData.pitch = (object.userData.pitch || 0) + dp;
+  object.userData.yaw = (object.userData.yaw || 0) + dy;
+  object.userData.roll = (object.userData.roll || 0) + dr;
+  applyOrientation(object);
+}
+
+function orientationGap(a, b) {
+  _q1.setFromEuler(_euler.set(a.userData.pitch || 0, a.userData.yaw || 0, a.userData.roll || 0, "YXZ"));
+  _q2.setFromEuler(_euler.set(b.userData.pitch || 0, b.userData.yaw || 0, b.userData.roll || 0, "YXZ"));
+  return _q1.angleTo(_q2);
+}
+
+function readCameraTilt() {
+  getCam().getWorldQuaternion(_q1);
+  _euler.setFromQuaternion(_q1, "YXZ");
+  return { pitch: _euler.x, yaw: _euler.y, roll: _euler.z };
 }
 
 function planarDistance(a, b) {
@@ -827,7 +864,8 @@ function randomLayout() {
 function spawnTrial() {
   clearTaskObjects();
   const matchIndex = Math.floor(Math.random() * SHAPES.length);
-  state.targetYaw = Math.random() * Math.PI * 2;
+  const ghostTilt = randomTilt();
+  state.targetYaw = ghostTilt.yaw;
   const targetPos = pointOnPlane(0, 0);
 
   ghost = createObject(SHAPES[matchIndex], 0.55);
@@ -835,7 +873,7 @@ function spawnTrial() {
   ghost.traverse((obj) => {
     obj.raycast = () => {};
   });
-  applyPose(ghost, targetPos, state.targetYaw);
+  placeObject(ghost, targetPos, ghostTilt.pitch, ghostTilt.yaw, ghostTilt.roll);
   ghost.add(ghostFloorRing(SHAPES[matchIndex].color));
   scene.add(ghost);
 
@@ -846,7 +884,8 @@ function spawnTrial() {
     obj.userData.ring = selectionRing(0xfff4d2);
     obj.add(obj.userData.ring);
     obj.add(pickVolume());
-    applyPose(obj, pointOnPlane(spots[i].x, spots[i].z), Math.random() * Math.PI * 2);
+    const tilt = randomTilt();
+    placeObject(obj, pointOnPlane(spots[i].x, spots[i].z), tilt.pitch, tilt.yaw, tilt.roll);
     scene.add(obj);
     return obj;
   });
@@ -934,29 +973,21 @@ function lockScale(object) {
 function panSelected(dxPx, dyPx) {
   if (!state.selected) return;
   const cam = getCam();
-  const dist = Math.max(0.3, cam.getWorldPosition(_v1).distanceTo(state.selected.position));
-  const fov = THREE.MathUtils.degToRad(cam.fov || 70);
-  const worldPerPx = (2 * Math.tan(fov / 2) * dist) / window.innerHeight;
   cam.getWorldQuaternion(_q1);
   const right = _v2.set(1, 0, 0).applyQuaternion(_q1);
-  const up = _v3.set(0, 1, 0).applyQuaternion(_q1);
-  state.selected.position.addScaledVector(right, dxPx * worldPerPx);
-  state.selected.position.addScaledVector(up, -dyPx * worldPerPx);
+  const forward = _v3.set(0, 0, -1).applyQuaternion(_q1);
+  right.y = 0;
+  forward.y = 0;
+  if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
+  if (forward.lengthSq() < 1e-6) forward.set(0, 0, -1);
+  right.normalize();
+  forward.normalize();
+  const step = 0.0008;
+  state.selected.position.addScaledVector(right, dxPx * step);
+  state.selected.position.addScaledVector(forward, dyPx * step);
+  state.selected.position.y = plane.point.y + 0.001;
   lockScale(state.selected);
-}
-
-function setYaw(object, yaw) {
-  const height = object.position.y;
-  applyPose(object, object.position, yaw);
-  object.position.y = height;
-  lockScale(object);
-}
-
-function cameraYaw() {
-  getCam().getWorldDirection(_v1);
-  _v1.y = 0;
-  if (_v1.lengthSq() < 1e-8) return 0;
-  return Math.atan2(_v1.x, _v1.z);
+  applyOrientation(state.selected);
 }
 
 function updateCarry() {
@@ -965,19 +996,23 @@ function updateCarry() {
   if (state.carryHeld && state.mode === "ar") {
     cam.getWorldPosition(_v1);
     state.selected.position.copy(carryAnchor.objPos).add(_v2.copy(_v1).sub(carryAnchor.camPos));
+    state.selected.position.y = carryAnchor.objPos.y;
     lockScale(state.selected);
-    setYaw(state.selected, state.selected.userData.yaw);
+    applyOrientation(state.selected);
   }
   if (state.rotHeld && state.mode === "ar") {
-    const delta = angleDiffSigned(cameraYaw(), carryAnchor.camYaw);
-    setYaw(state.selected, carryAnchor.objYaw + delta);
+    const now = readCameraTilt();
+    state.selected.userData.pitch = carryAnchor.objPitch + angleDiffSigned(now.pitch, carryAnchor.camPitch);
+    state.selected.userData.yaw = carryAnchor.objYaw + angleDiffSigned(now.yaw, carryAnchor.camYaw);
+    state.selected.userData.roll = carryAnchor.objRoll + angleDiffSigned(now.roll, carryAnchor.camRoll);
+    applyOrientation(state.selected);
   }
 }
 
 function checkDock(now) {
   if (state.phase !== "docking" || !state.selected || !ghost) return;
   const posErr = state.selected.position.distanceTo(ghost.position);
-  const yawErr = angleDiff(state.selected.userData.yaw, ghost.userData.yaw);
+  const yawErr = orientationGap(state.selected, ghost);
   const inside = posErr <= POS_TOL_M && yawErr <= YAW_TOL;
   if (inside) {
     if (!state.dockHoldStart) state.dockHoldStart = now;
@@ -1154,9 +1189,16 @@ function onPointerMove(e) {
       let delta = ang - gesture.lastTwist;
       delta = Math.atan2(Math.sin(delta), Math.cos(delta));
       gesture.lastTwist = ang;
-      setYaw(state.selected, state.selected.userData.yaw - delta);
+      const mid = pointerMid();
+      const mdx = mid.x - gesture.lastMidX;
+      const mdy = mid.y - gesture.lastMidY;
+      gesture.lastMidX = mid.x;
+      gesture.lastMidY = mid.y;
+      nudgeOrientation(state.selected, -mdy * 0.008, -delta, mdx * 0.008);
+    } else if (e.shiftKey) {
+      nudgeOrientation(state.selected, 0, 0, -e.movementX * 0.01);
     } else {
-      setYaw(state.selected, state.selected.userData.yaw - e.movementX * 0.01);
+      nudgeOrientation(state.selected, -e.movementY * 0.01, -e.movementX * 0.01, 0);
     }
     gesture.twisting = true;
     gesture.dragging = false;
@@ -1186,10 +1228,7 @@ function onPointerUp(e) {
 }
 
 function onWheel(e) {
-  if (state.mode !== "preview") return;
   e.preventDefault();
-  orbit.radius = THREE.MathUtils.clamp(orbit.radius * (e.deltaY > 0 ? 1.06 : 0.94), 0.28, 1.7);
-  updatePreviewCamera();
 }
 
 function isOrbitGesture(e) {
@@ -1261,8 +1300,13 @@ function onRotateDown(e) {
   ui.carry.classList.remove("held");
   ui.carry.textContent = "Desplazar";
   state.rotHeld = true;
-  carryAnchor.camYaw = cameraYaw();
+  const now = readCameraTilt();
+  carryAnchor.camPitch = now.pitch;
+  carryAnchor.camYaw = now.yaw;
+  carryAnchor.camRoll = now.roll;
+  carryAnchor.objPitch = state.selected.userData.pitch || 0;
   carryAnchor.objYaw = state.selected.userData.yaw || 0;
+  carryAnchor.objRoll = state.selected.userData.roll || 0;
   ui.rotate.classList.add("held");
   ui.rotate.textContent = "Girando";
   countTouch();
@@ -1270,9 +1314,15 @@ function onRotateDown(e) {
 
 function onRotateMove(e) {
   if (!state.rotHeld || !state.selected || state.mode !== "preview") return;
-  setYaw(state.selected, state.selected.userData.yaw - e.movementX * 0.01);
+  if (e.shiftKey) nudgeOrientation(state.selected, 0, 0, -e.movementX * 0.01);
+  else nudgeOrientation(state.selected, -e.movementY * 0.01, -e.movementX * 0.01, 0);
+  carryAnchor.objPitch = state.selected.userData.pitch;
   carryAnchor.objYaw = state.selected.userData.yaw;
-  carryAnchor.camYaw = cameraYaw();
+  carryAnchor.objRoll = state.selected.userData.roll;
+  const now = readCameraTilt();
+  carryAnchor.camPitch = now.pitch;
+  carryAnchor.camYaw = now.yaw;
+  carryAnchor.camRoll = now.roll;
 }
 
 function onRotateUp(e) {
@@ -1474,8 +1524,8 @@ function onDebugKey(e) {
   else if (e.key === "ArrowRight") pos.addScaledVector(plane.xAxis, step);
   else if (e.key === "ArrowUp") pos.addScaledVector(plane.zAxis, -step);
   else if (e.key === "ArrowDown") pos.addScaledVector(plane.zAxis, step);
-  else if (e.key === "q" || e.key === "Q") setYaw(state.selected, state.selected.userData.yaw - yawStep);
-  else if (e.key === "e" || e.key === "E") setYaw(state.selected, state.selected.userData.yaw + yawStep);
+  else if (e.key === "q" || e.key === "Q") nudgeOrientation(state.selected, 0, -yawStep, 0);
+  else if (e.key === "e" || e.key === "E") nudgeOrientation(state.selected, 0, yawStep, 0);
   else return;
   e.preventDefault();
   if (e.key.startsWith("Arrow")) {
