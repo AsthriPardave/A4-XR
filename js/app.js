@@ -627,16 +627,17 @@ function nudgeOrientation(object, dp, dy, dr) {
   const center = object.position.clone();
   if (dp) {
     _q1.setFromAxisAngle(_v1.set(1, 0, 0), dp);
-    object.quaternion.premultiply(_q1);
+    object.quaternion.multiply(_q1);
   }
   if (dy) {
     _q1.setFromAxisAngle(_v1.set(0, 1, 0), dy);
-    object.quaternion.premultiply(_q1);
+    object.quaternion.multiply(_q1);
   }
   if (dr) {
     _q1.setFromAxisAngle(_v1.set(0, 0, 1), dr);
-    object.quaternion.premultiply(_q1);
+    object.quaternion.multiply(_q1);
   }
+  object.quaternion.normalize();
   object.position.copy(center);
   lockScale(object);
   _euler.setFromQuaternion(object.quaternion, "YXZ");
@@ -656,18 +657,14 @@ function headingYaw(q) {
 }
 
 function orientationGap(a, b) {
-  a.getWorldQuaternion(_q1);
-  const yawA = headingYaw(_q1);
-  b.getWorldQuaternion(_q2);
-  const yawB = headingYaw(_q2);
+  const yawA = headingYaw(a.quaternion);
+  const yawB = headingYaw(b.quaternion);
   return angleDiff(yawA, yawB);
 }
 
 let dockMeasure = null;
 
 function measureDock() {
-  state.selected.quaternion.normalize();
-  ghost.quaternion.normalize();
   const pos = planarDistance(state.selected.position, ghost.position);
   const ang = orientationGap(state.selected, ghost);
   dockMeasure = { pos, ang };
@@ -1064,9 +1061,10 @@ function updateCarry() {
   if (state.rotHeld && state.mode === "ar") {
     cam.getWorldQuaternion(_q1);
     _q2.copy(carryAnchor.camQuat).invert();
-    _q1.multiply(_q2);
-    _q2.copy(_q1).multiply(carryAnchor.objQuat);
-    state.selected.quaternion.copy(_q2).normalize();
+    _q2.multiply(_q1);
+    _q1.copy(carryAnchor.objQuat).multiply(_q2);
+    state.selected.quaternion.copy(_q1);
+    state.selected.position.copy(carryAnchor.objPos);
     state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
     lockScale(state.selected);
   }
@@ -1375,6 +1373,7 @@ function onRotateDown(e) {
   state.rotHeld = true;
   getCam().getWorldQuaternion(carryAnchor.camQuat);
   carryAnchor.objQuat.copy(state.selected.quaternion);
+  carryAnchor.objPos.copy(state.selected.position);
   ui.rotate.classList.add("held");
   ui.rotate.textContent = "Girando";
   countTouch();
