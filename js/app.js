@@ -114,12 +114,8 @@ const gesture = {
 const carryAnchor = {
   camPos: new THREE.Vector3(),
   objPos: new THREE.Vector3(),
-  camPitch: 0,
-  camYaw: 0,
-  camRoll: 0,
-  objPitch: 0,
-  objYaw: 0,
-  objRoll: 0,
+  camQuat: new THREE.Quaternion(),
+  objQuat: new THREE.Quaternion(),
 };
 const _euler = new THREE.Euler();
 
@@ -618,7 +614,7 @@ function applyOrientation(object) {
 
 function placeObject(object, worldPos, pitch, yaw, roll) {
   object.position.copy(worldPos);
-  object.position.y = plane.point.y + 0.001;
+  object.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
   object.userData.pitch = pitch;
   object.userData.yaw = yaw;
   object.userData.roll = roll;
@@ -626,22 +622,29 @@ function placeObject(object, worldPos, pitch, yaw, roll) {
 }
 
 function nudgeOrientation(object, dp, dy, dr) {
-  object.userData.pitch = (object.userData.pitch || 0) + dp;
-  object.userData.yaw = (object.userData.yaw || 0) + dy;
-  object.userData.roll = (object.userData.roll || 0) + dr;
-  applyOrientation(object);
+  const center = object.position.clone();
+  if (dp) {
+    _q1.setFromAxisAngle(_v1.set(1, 0, 0), dp);
+    object.quaternion.premultiply(_q1);
+  }
+  if (dy) {
+    _q1.setFromAxisAngle(_v1.set(0, 1, 0), dy);
+    object.quaternion.premultiply(_q1);
+  }
+  if (dr) {
+    _q1.setFromAxisAngle(_v1.set(0, 0, 1), dr);
+    object.quaternion.premultiply(_q1);
+  }
+  object.position.copy(center);
+  lockScale(object);
+  _euler.setFromQuaternion(object.quaternion, "YXZ");
+  object.userData.pitch = _euler.x;
+  object.userData.yaw = _euler.y;
+  object.userData.roll = _euler.z;
 }
 
 function orientationGap(a, b) {
-  _q1.setFromEuler(_euler.set(a.userData.pitch || 0, a.userData.yaw || 0, a.userData.roll || 0, "YXZ"));
-  _q2.setFromEuler(_euler.set(b.userData.pitch || 0, b.userData.yaw || 0, b.userData.roll || 0, "YXZ"));
-  return _q1.angleTo(_q2);
-}
-
-function readCameraTilt() {
-  getCam().getWorldQuaternion(_q1);
-  _euler.setFromQuaternion(_q1, "YXZ");
-  return { pitch: _euler.x, yaw: _euler.y, roll: _euler.z };
+  return a.quaternion.angleTo(b.quaternion);
 }
 
 function planarDistance(a, b) {
@@ -677,35 +680,64 @@ function makeMaterial(color, opacity) {
   });
 }
 
+function faceMaterial(color, opacity) {
+  const ghostMode = opacity < 1;
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.42,
+    metalness: 0.04,
+    transparent: ghostMode,
+    opacity,
+    emissive: new THREE.Color(ghostMode ? color : 0x000000),
+    emissiveIntensity: ghostMode ? 0.22 : 0,
+    depthWrite: !ghostMode,
+  });
+}
+
 function addHeadingMark(root) {
   const mark = new THREE.Mesh(
-    new THREE.SphereGeometry(0.014, 14, 14),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.55, roughness: 0.3 })
+    new THREE.SphereGeometry(0.012, 14, 14),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.7, roughness: 0.3 })
   );
-  mark.position.set(0, SHAPE_SPAN_M * 0.78, SHAPE_SPAN_M * 0.28);
+  mark.position.set(0, 0, SHAPE_SPAN_M * 0.56);
   mark.userData.fixedMaterial = true;
   mark.raycast = () => {};
   root.add(mark);
 }
 
-function buildPrimitive(geometry) {
-  const mesh = new THREE.Mesh(geometry);
-  mesh.position.y = 0.06;
+function buildCylinder(opacity) {
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.12, 32), [
+    faceMaterial(0x3d8bfd, opacity),
+    faceMaterial(0xe74c3c, opacity),
+    faceMaterial(0xf1c40f, opacity),
+  ]);
+  mesh.userData.coloredFaces = true;
   const group = new THREE.Group();
   group.add(mesh);
   return group;
 }
 
-function buildCylinder() {
-  return buildPrimitive(new THREE.CylinderGeometry(0.06, 0.06, 0.12, 28));
+function buildCube(opacity) {
+  const colors = [0xe74c3c, 0x2ecc71, 0x3498db, 0xf1c40f, 0x9b59b6, 0xe67e22];
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 0.12, 0.12),
+    colors.map((color) => faceMaterial(color, opacity))
+  );
+  mesh.userData.coloredFaces = true;
+  const group = new THREE.Group();
+  group.add(mesh);
+  return group;
 }
 
-function buildCube() {
-  return buildPrimitive(new THREE.BoxGeometry(0.12, 0.12, 0.12));
-}
-
-function buildCone() {
-  return buildPrimitive(new THREE.ConeGeometry(0.06, 0.12, 28));
+function buildCone(opacity) {
+  const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.12, 28), [
+    faceMaterial(0x8e44ad, opacity),
+    faceMaterial(0x1abc9c, opacity),
+  ]);
+  mesh.userData.coloredFaces = true;
+  const group = new THREE.Group();
+  group.add(mesh);
+  return group;
 }
 
 const BUILDERS = { cylinder: buildCylinder, cube: buildCube, cone: buildCone };
@@ -713,13 +745,12 @@ const BUILDERS = { cylinder: buildCylinder, cube: buildCube, cone: buildCone };
 function groundCenter(group) {
   group.position.set(0, 0, 0);
   group.rotation.set(0, 0, 0);
+  group.scale.set(1, 1, 1);
   group.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(group);
   const center = box.getCenter(new THREE.Vector3());
   group.children.forEach((child) => {
-    child.position.x -= center.x;
-    child.position.z -= center.z;
-    child.position.y -= box.min.y;
+    child.position.sub(center);
   });
 }
 
@@ -738,16 +769,20 @@ function normalizeShapeSpan(group, targetSpan) {
 
 function paint(group, color, opacity) {
   group.traverse((obj) => {
-    if (!obj.isMesh || obj.userData.fixedMaterial) return;
+    if (!obj.isMesh || obj.userData.fixedMaterial || obj.userData.coloredFaces) return;
     obj.material = makeMaterial(color, opacity);
   });
 }
 
 function setEmissive(group, hex, intensity) {
   group.traverse((obj) => {
-    if (!obj.isMesh || !obj.material || !obj.material.emissive || obj.userData.fixedMaterial) return;
-    obj.material.emissive.setHex(hex);
-    obj.material.emissiveIntensity = intensity;
+    if (!obj.isMesh || !obj.material || obj.userData.fixedMaterial || obj.userData.coloredFaces) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach((mat) => {
+      if (!mat.emissive) return;
+      mat.emissive.setHex(hex);
+      mat.emissiveIntensity = intensity;
+    });
   });
 }
 
@@ -773,7 +808,7 @@ function pickVolume() {
     new THREE.CylinderGeometry(radius, radius, height, 12),
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
   );
-  pick.position.y = height * 0.5;
+  pick.position.y = 0;
   pick.userData.fixedScale = true;
   return pick;
 }
@@ -791,7 +826,7 @@ function ghostFloorRing(colorHex) {
     })
   );
   marker.rotation.x = -Math.PI / 2;
-  marker.position.y = 0.002;
+  marker.position.y = 0;
   marker.raycast = () => {};
   marker.userData.fixedScale = true;
   return marker;
@@ -799,7 +834,7 @@ function ghostFloorRing(colorHex) {
 
 function createObject(shape, opacity) {
   const root = new THREE.Group();
-  const body = BUILDERS[shape.id]();
+  const body = BUILDERS[shape.id](opacity);
   groundCenter(body);
   normalizeShapeSpan(body, SHAPE_SPAN_M);
   root.add(body);
@@ -985,9 +1020,8 @@ function panSelected(dxPx, dyPx) {
   const step = 0.0008;
   state.selected.position.addScaledVector(right, dxPx * step);
   state.selected.position.addScaledVector(forward, dyPx * step);
-  state.selected.position.y = plane.point.y + 0.001;
+  state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
   lockScale(state.selected);
-  applyOrientation(state.selected);
 }
 
 function updateCarry() {
@@ -996,16 +1030,17 @@ function updateCarry() {
   if (state.carryHeld && state.mode === "ar") {
     cam.getWorldPosition(_v1);
     state.selected.position.copy(carryAnchor.objPos).add(_v2.copy(_v1).sub(carryAnchor.camPos));
-    state.selected.position.y = carryAnchor.objPos.y;
+    state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
     lockScale(state.selected);
-    applyOrientation(state.selected);
   }
   if (state.rotHeld && state.mode === "ar") {
-    const now = readCameraTilt();
-    state.selected.userData.pitch = carryAnchor.objPitch + angleDiffSigned(now.pitch, carryAnchor.camPitch);
-    state.selected.userData.yaw = carryAnchor.objYaw + angleDiffSigned(now.yaw, carryAnchor.camYaw);
-    state.selected.userData.roll = carryAnchor.objRoll + angleDiffSigned(now.roll, carryAnchor.camRoll);
-    applyOrientation(state.selected);
+    cam.getWorldQuaternion(_q1);
+    _q2.copy(carryAnchor.camQuat).invert();
+    _q1.multiply(_q2);
+    _q2.copy(_q1).multiply(carryAnchor.objQuat);
+    state.selected.quaternion.copy(_q2);
+    state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
+    lockScale(state.selected);
   }
 }
 
@@ -1300,13 +1335,8 @@ function onRotateDown(e) {
   ui.carry.classList.remove("held");
   ui.carry.textContent = "Desplazar";
   state.rotHeld = true;
-  const now = readCameraTilt();
-  carryAnchor.camPitch = now.pitch;
-  carryAnchor.camYaw = now.yaw;
-  carryAnchor.camRoll = now.roll;
-  carryAnchor.objPitch = state.selected.userData.pitch || 0;
-  carryAnchor.objYaw = state.selected.userData.yaw || 0;
-  carryAnchor.objRoll = state.selected.userData.roll || 0;
+  getCam().getWorldQuaternion(carryAnchor.camQuat);
+  carryAnchor.objQuat.copy(state.selected.quaternion);
   ui.rotate.classList.add("held");
   ui.rotate.textContent = "Girando";
   countTouch();
@@ -1316,13 +1346,6 @@ function onRotateMove(e) {
   if (!state.rotHeld || !state.selected || state.mode !== "preview") return;
   if (e.shiftKey) nudgeOrientation(state.selected, 0, 0, -e.movementX * 0.01);
   else nudgeOrientation(state.selected, -e.movementY * 0.01, -e.movementX * 0.01, 0);
-  carryAnchor.objPitch = state.selected.userData.pitch;
-  carryAnchor.objYaw = state.selected.userData.yaw;
-  carryAnchor.objRoll = state.selected.userData.roll;
-  const now = readCameraTilt();
-  carryAnchor.camPitch = now.pitch;
-  carryAnchor.camYaw = now.yaw;
-  carryAnchor.camRoll = now.roll;
 }
 
 function onRotateUp(e) {
