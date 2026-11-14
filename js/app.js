@@ -95,6 +95,7 @@ const state = {
   match: null,
   targetYaw: 0,
   aimValid: false,
+  surfaceReady: false,
   trackingOk: true,
   sawTracking: false,
   xrSupported: false,
@@ -120,7 +121,22 @@ const carryAnchor = {
   objPos: new THREE.Vector3(),
   camQuat: new THREE.Quaternion(),
   objQuat: new THREE.Quaternion(),
+  lastCam: new THREE.Vector3(),
+  camReady: false,
 };
+const stableHitMatrix = new THREE.Matrix4();
+const anchorPos = new THREE.Vector3();
+const anchorQuat = new THREE.Quaternion();
+const anchorNextPos = new THREE.Vector3();
+const anchorNextQuat = new THREE.Quaternion();
+let stableHitAt = 0;
+let placeRequest = false;
+let placeRequestAt = 0;
+let placeToken = 0;
+let placePending = false;
+let contentAnchor = null;
+let anchorSeeded = false;
+let anchorsEnabled = false;
 const rotPointer = { x: 0, y: 0 };
 const _euler = new THREE.Euler();
 
@@ -275,6 +291,15 @@ function init() {
   renderer.xr.addEventListener("sessionend", onSessionEnd);
   document.addEventListener("contextmenu", (e) => e.preventDefault());
   window.addEventListener("keydown", onDebugKey);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) return;
+    state.carryHeld = false;
+    state.rotHeld = false;
+    if (!ui.carry.hidden) ui.carry.textContent = "Desplazar";
+    if (!ui.rotate.hidden) ui.rotate.textContent = "Rotar";
+    ui.carry.classList.remove("held");
+    ui.rotate.classList.remove("held");
+  });
 
   setFloorVisible(true);
   showSetup();
@@ -395,7 +420,7 @@ async function startSession(mode) {
     try {
       session = await navigator.xr.requestSession("immersive-ar", {
         requiredFeatures: ["hit-test"],
-        optionalFeatures: ["dom-overlay"],
+        optionalFeatures: ["dom-overlay", "anchors", "local-floor"],
         domOverlay: { root: ui.overlay },
       });
     } catch (err) {
@@ -405,8 +430,16 @@ async function startSession(mode) {
       return;
     }
     try {
-      renderer.xr.setReferenceSpaceType("local");
-      await renderer.xr.setSession(session);
+      const enabled = session.enabledFeatures || [];
+      anchorsEnabled = enabled.includes("anchors");
+      renderer.xr.setReferenceSpaceType(enabled.includes("local-floor") ? "local-floor" : "local");
+      try {
+        await renderer.xr.setSession(session);
+      } catch (err) {
+        if (!enabled.includes("local-floor")) throw err;
+        renderer.xr.setReferenceSpaceType("local");
+        await renderer.xr.setSession(session);
+      }
       beginHitTest(session);
     } catch (err) {
       console.error(err);
@@ -427,6 +460,7 @@ async function startSession(mode) {
 
 function onSessionEnd() {
   cancelHitTest();
+  resetSurfaceLock();
   state.carryHeld = false;
   state.rotHeld = false;
   const unexpected = state.mode === "ar" && !state.leaving;
@@ -450,6 +484,10 @@ function beginTrial() {
   state.rotHeld = false;
   state.sawTracking = false;
   state.trackingOk = true;
+  placeToken += 1;
+  placeRequest = false;
+  placePending = false;
+  dropAnchor();
   plane.ready = false;
   gesture.dragging = false;
   gesture.twisting = false;
@@ -1013,8 +1051,24 @@ function placeWorkspace() {
     toast("El círculo sigue amarillo. Recorre la mesa hasta que se ponga verde.");
     return;
   }
+  if (state.mode === "ar") {
+    placeRequest = true;
+    placeRequestAt = performance.now();
+    return;
+  }
   reticle.updateMatrixWorld(true);
-  reticle.matrix.decompose(aimPoint, aimQuat, _v1);
+  commitPlacement(reticle.matrix);
+}
+
+function commitPlacement(matrix) {
+  if (state.phase !== "placing") return;
+  _m1.copy(matrix);
+  _m1.decompose(aimPoint, aimQuat, _v1);
+  if (contentAnchor) {
+    anchorPos.copy(aimPoint);
+    anchorQuat.copy(aimQuat);
+    anchorSeeded = true;
+  }
   setPlane(aimPoint, aimNormal.set(0, 1, 0));
   if (state.mode === "preview") {
     orbit.target.copy(plane.point);
@@ -1022,6 +1076,7 @@ function placeWorkspace() {
   }
   spawnTrial();
   reticle.visible = false;
+  placeRequest = false;
   setPhase("selecting");
 }
 
@@ -1110,6 +1165,12 @@ function updateCarry() {
   const cam = getCam();
   if (state.carryHeld && state.mode === "ar") {
     cam.getWorldPosition(_v1);
+    if (carryAnchor.camReady) {
+      const jump = _v3.subVectors(_v1, carryAnchor.lastCam).length();
+      if (jump > 0.28) carryAnchor.camPos.add(_v2.subVectors(_v1, carryAnchor.lastCam));
+    }
+    carryAnchor.lastCam.copy(_v1);
+    carryAnchor.camReady = true;
     state.selected.position.copy(carryAnchor.objPos).add(_v2.copy(_v1).sub(carryAnchor.camPos));
     state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
     lockScale(state.selected);
@@ -1256,6 +1317,17 @@ function startOtherTechnique() {
   const next = state.technique === "touch" ? "carry" : "touch";
   const input = document.querySelector(`input[name="technique"][value="${next}"]`);
   if (input) input.checked = true;
+  const session = renderer.xr.getSession();
+  if (session && state.mode === "ar") {
+    state.technique = next;
+    state.participant = ui.participant.value.trim() || state.participant;
+    state.blockId = `${state.participant}-${state.technique}-${Date.now()}`;
+    state.trial = 1;
+    state.leaving = false;
+    beginTrial();
+    toast("Seguimos sobre la misma mesa. Apunta al círculo verde.");
+    return;
+  }
   exitToSetup();
 }
 
@@ -1398,7 +1470,10 @@ function onCarryDown(e) {
   ui.rotate.classList.remove("held");
   ui.rotate.textContent = "Rotar";
   state.carryHeld = true;
+  carryAnchor.camReady = false;
   getCam().getWorldPosition(carryAnchor.camPos);
+  carryAnchor.lastCam.copy(carryAnchor.camPos);
+  carryAnchor.camReady = true;
   carryAnchor.objPos.copy(state.selected.position);
   ui.carry.classList.add("held");
   ui.carry.textContent = "Soltar";
@@ -1413,6 +1488,7 @@ function onCarryMove(e) {
 function onCarryUp(e) {
   if (!state.carryHeld) return;
   state.carryHeld = false;
+  carryAnchor.camReady = false;
   ui.carry.classList.remove("held");
   ui.carry.textContent = "Desplazar";
   if (e && ui.carry.hasPointerCapture?.(e.pointerId)) ui.carry.releasePointerCapture(e.pointerId);
@@ -1466,13 +1542,63 @@ function noteTracking(ok) {
   if (ok) state.sawTracking = true;
 }
 
+function dropAnchor() {
+  const anchor = contentAnchor;
+  contentAnchor = null;
+  anchorSeeded = false;
+  if (anchor && typeof anchor.delete === "function") {
+    try { anchor.delete(); } catch { /* already removed with the session */ }
+  }
+}
+
+function resetSurfaceLock() {
+  stableHitAt = 0;
+  state.surfaceReady = false;
+  placeRequest = false;
+  placePending = false;
+  placeToken += 1;
+  anchorsEnabled = false;
+  dropAnchor();
+}
+
+function updateAnchor(frame) {
+  if (!contentAnchor || !frame) return;
+  if (state.phase === "placing" || state.phase === "setup") return;
+  const referenceSpace = renderer.xr.getReferenceSpace();
+  if (!referenceSpace) return;
+  let pose = null;
+  try { pose = frame.getPose(contentAnchor.anchorSpace, referenceSpace); } catch { return; }
+  if (!pose) return;
+  _m1.fromArray(pose.transform.matrix);
+  _m1.decompose(anchorNextPos, anchorNextQuat, _v2);
+  if (!anchorSeeded) {
+    anchorPos.copy(anchorNextPos);
+    anchorQuat.copy(anchorNextQuat);
+    anchorSeeded = true;
+    return;
+  }
+  const shift = anchorNextPos.distanceTo(anchorPos);
+  if (shift < 0.0015) {
+    anchorQuat.copy(anchorNextQuat);
+    return;
+  }
+  _v3.subVectors(anchorNextPos, anchorPos);
+  if (ghost) ghost.position.add(_v3);
+  pieces.forEach((obj) => obj.position.add(_v3));
+  plane.point.add(_v3);
+  if (state.carryHeld) carryAnchor.objPos.add(_v3);
+  anchorPos.copy(anchorNextPos);
+  anchorQuat.copy(anchorNextQuat);
+}
+
 function beginHitTest(session) {
   cancelHitTest();
   if (!session) return;
   hitTestSourceRequested = true;
   session.requestReferenceSpace("viewer").then((viewerSpace) => {
     if (renderer.xr.getSession() !== session) return null;
-    return session.requestHitTestSource({ space: viewerSpace });
+    const broad = { space: viewerSpace, entityTypes: ["plane", "point"] };
+    return session.requestHitTestSource(broad).catch(() => session.requestHitTestSource({ space: viewerSpace }));
   }).then((source) => {
     if (source && renderer.xr.getSession() === session) hitTestSource = source;
   }).catch((err) => {
@@ -1580,26 +1706,80 @@ function updateReticle(frame) {
   const session = renderer.xr.getSession();
   if (session && !hitTestSource && !hitTestSourceRequested) beginHitTest(session);
 
+  let chosen = null;
+  let tilted = null;
   if (frame && hitTestSource && referenceSpace) {
     const hitTestResults = frame.getHitTestResults(hitTestSource);
-    if (hitTestResults.length) {
-      const pose = hitTestResults[0].getPose(referenceSpace);
-      if (pose) {
-        _m1.fromArray(pose.transform.matrix);
-        const horizontal = isHorizontalHit(_m1);
-        showHitReticle(_m1, horizontal);
-        aimMessage = horizontal
-          ? "Superficie plana. Toca el círculo verde."
-          : "Esa superficie no es horizontal. Apunta a la mesa o al suelo.";
-        refreshAimText();
-        return;
+    for (const hit of hitTestResults) {
+      const pose = hit.getPose(referenceSpace);
+      if (!pose) continue;
+      _m1.fromArray(pose.transform.matrix);
+      if (isHorizontalHit(_m1)) {
+        chosen = hit;
+        stableHitMatrix.copy(_m1);
+        stableHitAt = performance.now();
+        state.surfaceReady = true;
+        break;
       }
+      if (!tilted) tilted = _m1.clone();
     }
+  }
+
+  if (placeRequest && !placePending && state.phase === "placing") {
+    if (chosen) {
+      const token = placeToken;
+      const saved = stableHitMatrix.clone();
+      placeRequest = false;
+      placePending = true;
+      const finish = (anchor) => {
+        placePending = false;
+        if (token !== placeToken || state.phase !== "placing") {
+          if (anchor && typeof anchor.delete === "function") {
+            try { anchor.delete(); } catch { /* stale anchor */ }
+          }
+          return;
+        }
+        if (anchor) {
+          dropAnchor();
+          contentAnchor = anchor;
+          anchorSeeded = false;
+        }
+        commitPlacement(saved);
+      };
+      if (anchorsEnabled && typeof chosen.createAnchor === "function") {
+        chosen.createAnchor().then(finish).catch(() => finish(null));
+      } else {
+        finish(null);
+      }
+      if (state.phase === "placing") showHitReticle(saved, true);
+      return;
+    }
+    if (stableHitAt && performance.now() - placeRequestAt > 450) {
+      placeRequest = false;
+      commitPlacement(stableHitMatrix);
+      return;
+    }
+  }
+
+  if (chosen || (stableHitAt && performance.now() - stableHitAt < 800)) {
+    showHitReticle(stableHitMatrix, true);
+    aimMessage = "Superficie plana. Toca el círculo verde.";
+    refreshAimText();
+    return;
+  }
+
+  if (tilted) {
+    showHitReticle(tilted, false);
+    aimMessage = "Esa superficie no es horizontal. Apunta a la mesa o al suelo.";
+    refreshAimText();
+    return;
   }
 
   showSearchCircle();
   aimMessage = hitTestSource
-    ? "Mueve el teléfono de lado a lado sobre la mesa hasta que el círculo se ponga verde."
+    ? (state.surfaceReady
+      ? "La mesa ya está reconocida. Apunta al mismo lugar hasta que el círculo se ponga verde."
+      : "Mueve el teléfono de lado a lado sobre la mesa hasta que el círculo se ponga verde.")
     : "Preparando el detector. Mueve el teléfono un momento.";
   refreshAimText();
 }
@@ -1628,6 +1808,7 @@ function animate(timestamp, frame) {
   lastFrameTime = now;
 
   updateReticle(frame);
+  updateAnchor(frame);
 
   updateCarry(dt || 0.016);
   if (ghost && ghost.userData.floorRing) layRingFlat(ghost, ghost.userData.floorRing);
