@@ -127,8 +127,6 @@ const carryAnchor = {
 const stableHitMatrix = new THREE.Matrix4();
 const anchorPos = new THREE.Vector3();
 const anchorQuat = new THREE.Quaternion();
-const anchorNextPos = new THREE.Vector3();
-const anchorNextQuat = new THREE.Quaternion();
 let stableHitAt = 0;
 let placeRequest = false;
 let placeRequestAt = 0;
@@ -574,10 +572,25 @@ function proximityText() {
   const { pos, ang } = dockMeasure;
   const cm = (pos * 100).toFixed(1);
   const deg = THREE.MathUtils.radToDeg(ang).toFixed(0);
-  if (pos <= POS_TOL_M && ang <= YAW_TOL) return `Coincide por todos lados (${cm} cm, ${deg}°). Quédate quieto.`;
-  if (pos <= POS_TOL_M) return `El centro ya está (${cm} cm), pero el giro sigue en ${deg}°. Desde otro lado se ve chueca.`;
-  if (ang <= YAW_TOL) return `El giro ya coincide (${deg}°). Falta acercarla: ${cm} cm.`;
-  return `${cm} cm · giro ${deg}°. Las marcas blancas tienen que coincidir.`;
+  const bases = basesOnly(state.selected);
+  if (pos <= POS_TOL_M && ang <= YAW_TOL) {
+    return bases
+      ? `La base ya coincide (${cm} cm, ${deg}°). Quédate quieto.`
+      : `Coincide por todos lados (${cm} cm, ${deg}°). Quédate quieto.`;
+  }
+  if (pos <= POS_TOL_M) {
+    return bases
+      ? `El centro ya está (${cm} cm). Falta orientar la base: ${deg}°.`
+      : `El centro ya está (${cm} cm), pero el giro sigue en ${deg}°. Desde otro lado se ve chueca.`;
+  }
+  if (ang <= YAW_TOL) {
+    return bases
+      ? `La base ya coincide (${deg}°). Falta acercarla: ${cm} cm.`
+      : `El giro ya coincide (${deg}°). Falta acercarla: ${cm} cm.`;
+  }
+  return bases
+    ? `${cm} cm · la base está a ${deg}°. Girar alrededor del círculo no hace falta.`
+    : `${cm} cm · giro ${deg}°. Las marcas blancas tienen que coincidir.`;
 }
 
 function setFloorVisible(visible) {
@@ -700,7 +713,17 @@ function rotFromDrag(dx, dy, rollOnly) {
   else nudgeOrientation(state.selected, -dy * ROT_GAIN, -dx * ROT_GAIN, 0);
 }
 
+function basesOnly(object) {
+  const id = object && object.userData.shapeId;
+  return id === "cylinder" || id === "cone";
+}
+
 function orientationGap(a, b) {
+  if (basesOnly(a)) {
+    _v1.set(0, 1, 0).applyQuaternion(a.quaternion);
+    _v2.set(0, 1, 0).applyQuaternion(b.quaternion);
+    return _v1.angleTo(_v2);
+  }
   return a.quaternion.angleTo(b.quaternion);
 }
 
@@ -954,7 +977,7 @@ function createObject(shape, opacity) {
   groundCenter(body);
   normalizeShapeSpan(body, SHAPE_SPAN_M);
   root.add(body);
-  addOrientationMarks(root);
+  if (shape.id === "cube") addOrientationMarks(root);
   if (opacity < 1) addSilhouette(body);
   paint(body, shape.color, opacity);
   root.userData.shapeId = shape.id;
@@ -1561,35 +1584,7 @@ function resetSurfaceLock() {
   dropAnchor();
 }
 
-function updateAnchor(frame) {
-  if (!contentAnchor || !frame) return;
-  if (state.phase === "placing" || state.phase === "setup") return;
-  const referenceSpace = renderer.xr.getReferenceSpace();
-  if (!referenceSpace) return;
-  let pose = null;
-  try { pose = frame.getPose(contentAnchor.anchorSpace, referenceSpace); } catch { return; }
-  if (!pose) return;
-  _m1.fromArray(pose.transform.matrix);
-  _m1.decompose(anchorNextPos, anchorNextQuat, _v2);
-  if (!anchorSeeded) {
-    anchorPos.copy(anchorNextPos);
-    anchorQuat.copy(anchorNextQuat);
-    anchorSeeded = true;
-    return;
-  }
-  const shift = anchorNextPos.distanceTo(anchorPos);
-  if (shift < 0.0015) {
-    anchorQuat.copy(anchorNextQuat);
-    return;
-  }
-  _v3.subVectors(anchorNextPos, anchorPos);
-  if (ghost) ghost.position.add(_v3);
-  pieces.forEach((obj) => obj.position.add(_v3));
-  plane.point.add(_v3);
-  if (state.carryHeld) carryAnchor.objPos.add(_v3);
-  anchorPos.copy(anchorNextPos);
-  anchorQuat.copy(anchorNextQuat);
-}
+function updateAnchor() {}
 
 function beginHitTest(session) {
   cancelHitTest();
