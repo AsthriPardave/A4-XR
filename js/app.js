@@ -646,35 +646,17 @@ function nudgeOrientation(object, dp, dy, dr) {
   object.userData.roll = _euler.z;
 }
 
-function headingYaw(q) {
-  _v1.set(0, 0, 1).applyQuaternion(q);
-  _v1.addScaledVector(plane.normal, -_v1.dot(plane.normal));
-  if (_v1.lengthSq() < 1e-6) {
-    _v1.set(1, 0, 0).applyQuaternion(q);
-    _v1.addScaledVector(plane.normal, -_v1.dot(plane.normal));
-  }
-  return Math.atan2(_v1.dot(plane.xAxis), _v1.dot(plane.zAxis));
-}
-
 function orientationGap(a, b) {
-  const yawA = headingYaw(a.quaternion);
-  const yawB = headingYaw(b.quaternion);
-  return angleDiff(yawA, yawB);
+  return a.quaternion.angleTo(b.quaternion);
 }
 
 let dockMeasure = null;
 
 function measureDock() {
-  const pos = planarDistance(state.selected.position, ghost.position);
+  const pos = state.selected.position.distanceTo(ghost.position);
   const ang = orientationGap(state.selected, ghost);
   dockMeasure = { pos, ang };
   return dockMeasure;
-}
-
-function planarDistance(a, b) {
-  _v1.subVectors(a, b);
-  _v1.addScaledVector(plane.normal, -_v1.dot(plane.normal));
-  return _v1.length();
 }
 
 function angleDiffSigned(a, b) {
