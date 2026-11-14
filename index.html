@@ -43,7 +43,7 @@
         <button id="btn-restart" type="button" class="ghost">Reiniciar intento</button>
         <button id="btn-exit" type="button" class="ghost">Salir</button>
       </div>
-      <p id="preview-hint" hidden>Escritorio: arrastra para mirar antes de elegir. Con gestos, Shift+arrastrar gira sobre la vertical. Con carry, arrastra Desplazar para mover y Rotar para girar.</p>
+      <p id="preview-hint" hidden>Escritorio: arrastra para mirar antes de elegir. Con gestos, Shift+arrastrar gira la figura sobre su eje y Alt+Shift la rueda. Con carry, arrastra Desplazar para mover y Rotar para girar.</p>
     </div>
 
     <section id="screen-setup" class="sheet">
@@ -61,14 +61,14 @@
           <input type="radio" name="technique" value="touch" checked />
           <span>
             <strong>Gestos táctiles</strong>
-            <small>Un dedo mueve. Dos dedos giran.</small>
+            <small>Un dedo mueve. Dos dedos giran la figura sobre su propio eje.</small>
           </span>
         </label>
         <label class="choice">
           <input type="radio" name="technique" value="carry" />
           <span>
             <strong>Carry</strong>
-            <small>Desplazar la mueve, sin cambiar el tamaño. Rotar la inclina.</small>
+            <small>Desplazar la mueve. Rotar la gira sobre su propio eje, arrastrando el dedo.</small>
           </span>
         </label>
       </fieldset>
@@ -113,7 +113,7 @@
     </section>
   </div>
 
-  <script type="module" src="./js/app.js?v=26"></script>
+  <script type="module" src="./js/app.js?v=28"></script>
   <script>
     document.getElementById("btn-ar").disabled = false;
     setTimeout(function () {

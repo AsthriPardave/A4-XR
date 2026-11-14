@@ -5,6 +5,8 @@ const YAW_TOL = THREE.MathUtils.degToRad(10);
 const DOCK_HOLD_MS = 400;
 const DOCK_GRACE_MS = 150;
 const SHAPE_SPAN_M = 0.2;
+const ROT_GAIN = 0.02;
+const TWIST_GAIN = 2.2;
 const TAP_SLOP_PX = 14;
 const STORAGE_KEY = "a4xr-docking-v1";
 const NOTES_KEY = "a4xr-notes-v1";
@@ -119,6 +121,7 @@ const carryAnchor = {
   camQuat: new THREE.Quaternion(),
   objQuat: new THREE.Quaternion(),
 };
+const rotPointer = { x: 0, y: 0 };
 const _euler = new THREE.Euler();
 
 const plane = {
@@ -517,8 +520,8 @@ function updateInstruction() {
   } else if (state.phase === "docking") {
     const name = state.selected ? state.selected.userData.name : "";
     ui.instruction.textContent = state.technique === "touch"
-      ? "Un dedo mueve la figura sobre la mesa, sin cambiar su tamaño. Dos dedos la inclinan y la giran."
-      : "Desplazar la mueve sobre la mesa, siempre del mismo tamaño. Rotar cambia su inclinación.";
+      ? "Un dedo mueve la figura, sin cambiar su tamaño. Dos dedos la giran sobre su propio eje."
+      : "Desplazar la mueve, siempre del mismo tamaño. Mantén Rotar y arrastra para girarla sobre su propio eje.";
     ui.detail.textContent = `Seleccionado: ${name}. Incorrectas: ${state.wrong}. ${proximityText()}`;
     ui.status.classList.add("warn");
   } else if (state.phase === "success") {
@@ -531,9 +534,12 @@ function updateInstruction() {
 function proximityText() {
   if (!state.selected || !ghost || !dockMeasure) return "";
   const { pos, ang } = dockMeasure;
-  if (pos <= POS_TOL_M && ang <= YAW_TOL) return "Quédate quieto…";
-  if (pos < 0.08 && ang < THREE.MathUtils.degToRad(30)) return "Cerca.";
-  return "Lejos.";
+  const cm = (pos * 100).toFixed(1);
+  const deg = THREE.MathUtils.radToDeg(ang).toFixed(0);
+  if (pos <= POS_TOL_M && ang <= YAW_TOL) return `Coincide por todos lados (${cm} cm, ${deg}°). Quédate quieto.`;
+  if (pos <= POS_TOL_M) return `El centro ya está (${cm} cm), pero el giro sigue en ${deg}°. Desde otro lado se ve chueca.`;
+  if (ang <= YAW_TOL) return `El giro ya coincide (${deg}°). Falta acercarla: ${cm} cm.`;
+  return `${cm} cm · giro ${deg}°. Las marcas blancas tienen que coincidir.`;
 }
 
 function setFloorVisible(visible) {
@@ -624,26 +630,36 @@ function placeObject(object, worldPos, pitch, yaw, roll) {
 }
 
 function nudgeOrientation(object, dp, dy, dr) {
+  if (!object || (!dp && !dy && !dr)) return;
   const center = object.position.clone();
-  if (dp) {
-    _q1.setFromAxisAngle(_v1.set(1, 0, 0), dp);
-    object.quaternion.multiply(_q1);
-  }
+  _q1.identity();
   if (dy) {
-    _q1.setFromAxisAngle(_v1.set(0, 1, 0), dy);
-    object.quaternion.multiply(_q1);
+    _q2.setFromAxisAngle(_v1.set(0, 1, 0), dy);
+    _q1.multiply(_q2);
+  }
+  if (dp) {
+    _q2.setFromAxisAngle(_v1.set(1, 0, 0), dp);
+    _q1.multiply(_q2);
   }
   if (dr) {
-    _q1.setFromAxisAngle(_v1.set(0, 0, 1), dr);
-    object.quaternion.multiply(_q1);
+    _q2.setFromAxisAngle(_v1.set(0, 0, 1), dr);
+    _q1.multiply(_q2);
   }
-  object.quaternion.normalize();
+  object.quaternion.multiply(_q1).normalize();
   object.position.copy(center);
   lockScale(object);
   _euler.setFromQuaternion(object.quaternion, "YXZ");
   object.userData.pitch = _euler.x;
   object.userData.yaw = _euler.y;
   object.userData.roll = _euler.z;
+}
+
+function rotFromDrag(dx, dy, rollOnly) {
+  if (!state.selected) return;
+  dx = THREE.MathUtils.clamp(dx, -36, 36);
+  dy = THREE.MathUtils.clamp(dy, -36, 36);
+  if (rollOnly) nudgeOrientation(state.selected, 0, 0, -dx * ROT_GAIN);
+  else nudgeOrientation(state.selected, -dy * ROT_GAIN, -dx * ROT_GAIN, 0);
 }
 
 function orientationGap(a, b) {
@@ -700,15 +716,43 @@ function faceMaterial(color, opacity) {
   });
 }
 
-function addHeadingMark(root) {
-  const mark = new THREE.Mesh(
-    new THREE.SphereGeometry(0.012, 14, 14),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.7, roughness: 0.3 })
+function markMaterial() {
+  return new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0xffffff,
+    emissiveIntensity: 0.85,
+    roughness: 0.28,
+  });
+}
+
+function addOrientationMarks(root) {
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.016, 16, 16), markMaterial());
+  nose.position.set(0, SHAPE_SPAN_M * 0.18, SHAPE_SPAN_M * 0.62);
+  const fin = new THREE.Mesh(
+    new THREE.BoxGeometry(SHAPE_SPAN_M * 0.28, SHAPE_SPAN_M * 0.1, SHAPE_SPAN_M * 0.1),
+    markMaterial()
   );
-  mark.position.set(0, 0, SHAPE_SPAN_M * 0.56);
-  mark.userData.fixedMaterial = true;
-  mark.raycast = () => {};
-  root.add(mark);
+  fin.position.set(SHAPE_SPAN_M * 0.58, 0, 0);
+  for (const mark of [nose, fin]) {
+    mark.userData.fixedMaterial = true;
+    mark.userData.orientationMark = true;
+    mark.raycast = () => {};
+    root.add(mark);
+  }
+}
+
+function addSilhouette(body) {
+  body.traverse((obj) => {
+    if (!obj.isMesh || !obj.geometry || obj.userData.fixedMaterial) return;
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(obj.geometry, 28),
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthTest: false })
+    );
+    edges.raycast = () => {};
+    edges.userData.fixedMaterial = true;
+    edges.renderOrder = 3;
+    obj.add(edges);
+  });
 }
 
 function buildCylinder(opacity) {
@@ -736,10 +780,10 @@ function buildCube(opacity) {
 }
 
 function buildCone(opacity) {
-  const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.12, 28), [
-    faceMaterial(0x8e44ad, opacity),
-    faceMaterial(0x1abc9c, opacity),
-  ]);
+  const side = faceMaterial(0x8e44ad, opacity);
+  const base = faceMaterial(0x1abc9c, opacity);
+  // ConeGeometry assigns the side to material 0 and the base to material 2.
+  const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.12, 32), [side, side, base]);
   mesh.userData.coloredFaces = true;
   const group = new THREE.Group();
   group.add(mesh);
@@ -780,6 +824,36 @@ function paint(group, color, opacity) {
   });
 }
 
+function paintMarks(group, hex) {
+  if (!group) return;
+  group.traverse((obj) => {
+    if (!obj.isMesh || !obj.userData.orientationMark || !obj.material) return;
+    obj.material.color.setHex(hex);
+    if (obj.material.emissive) obj.material.emissive.setHex(hex);
+  });
+}
+
+function layRingFlat(object, ring) {
+  if (!object || !ring || !plane.ready) return;
+  object.updateWorldMatrix(true, false);
+  _v3.set(object.position.x, plane.point.y + 0.003, object.position.z);
+  object.worldToLocal(_v3);
+  ring.position.copy(_v3);
+  _q2.setFromAxisAngle(_v1.set(1, 0, 0), -Math.PI / 2);
+  ring.quaternion.copy(object.quaternion).invert().multiply(_q2);
+}
+
+function showAlignment(pos, ang) {
+  if (!state.selected) return;
+  const posOk = pos <= POS_TOL_M;
+  const angOk = ang <= YAW_TOL;
+  const matched = posOk && angOk;
+  const ring = state.selected.userData.ring;
+  if (ring) ring.material.color.setHex(matched ? 0x39d98a : (posOk || angOk ? 0xf2c14e : 0xfff4d2));
+  paintMarks(state.selected, matched ? 0x39d98a : 0xffffff);
+  paintMarks(ghost, matched ? 0x39d98a : 0xffffff);
+}
+
 function setEmissive(group, hex, intensity) {
   group.traverse((obj) => {
     if (!obj.isMesh || !obj.material || obj.userData.fixedMaterial || obj.userData.coloredFaces) return;
@@ -808,13 +882,11 @@ function selectionRing(color) {
 }
 
 function pickVolume() {
-  const radius = SHAPE_SPAN_M * 0.34;
-  const height = SHAPE_SPAN_M * 0.45;
+  const span = SHAPE_SPAN_M * 1.05;
   const pick = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius, height, 12),
+    new THREE.BoxGeometry(span, span, span),
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
   );
-  pick.position.y = 0;
   pick.userData.fixedScale = true;
   return pick;
 }
@@ -844,7 +916,8 @@ function createObject(shape, opacity) {
   groundCenter(body);
   normalizeShapeSpan(body, SHAPE_SPAN_M);
   root.add(body);
-  addHeadingMark(root);
+  addOrientationMarks(root);
+  if (opacity < 1) addSilhouette(body);
   paint(body, shape.color, opacity);
   root.userData.shapeId = shape.id;
   root.userData.name = shape.name;
@@ -915,7 +988,8 @@ function spawnTrial() {
     obj.raycast = () => {};
   });
   placeObject(ghost, targetPos, ghostTilt.pitch, ghostTilt.yaw, ghostTilt.roll);
-  ghost.add(ghostFloorRing(SHAPES[matchIndex].color));
+  ghost.userData.floorRing = ghostFloorRing(SHAPES[matchIndex].color);
+  ghost.add(ghost.userData.floorRing);
   scene.add(ghost);
 
   const spots = randomLayout();
@@ -1040,21 +1114,12 @@ function updateCarry() {
     state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
     lockScale(state.selected);
   }
-  if (state.rotHeld && state.mode === "ar") {
-    cam.getWorldQuaternion(_q1);
-    _q2.copy(carryAnchor.camQuat).invert();
-    _q2.multiply(_q1);
-    _q1.copy(carryAnchor.objQuat).multiply(_q2);
-    state.selected.quaternion.copy(_q1);
-    state.selected.position.copy(carryAnchor.objPos);
-    state.selected.position.y = plane.point.y + SHAPE_SPAN_M * 0.5;
-    lockScale(state.selected);
-  }
 }
 
 function checkDock(now) {
   if (state.phase !== "docking" || !state.selected || !ghost) return;
   const { pos, ang } = measureDock();
+  showAlignment(pos, ang);
   const inside = pos <= POS_TOL_M && ang <= YAW_TOL;
   if (inside) {
     state.dockOutsideSince = 0;
@@ -1072,7 +1137,7 @@ function checkDock(now) {
   if (debug) {
     debugEl.hidden = false;
     debugEl.textContent =
-      `pos ${(pos * 100).toFixed(1)} cm\nyaw ${THREE.MathUtils.radToDeg(ang).toFixed(1)}°\n` +
+      `pos ${(pos * 100).toFixed(1)} cm\ngiro ${THREE.MathUtils.radToDeg(ang).toFixed(1)}°\n` +
       `tol 2 cm / 10°`;
   }
   if (state.phase === "docking") updateInstruction();
@@ -1108,6 +1173,8 @@ function completeDock(posErr, yawErr) {
   ui.carry.classList.remove("held");
   setEmissive(state.selected, 0x39d98a, 0.55);
   setEmissive(ghost, 0x39d98a, 0.7);
+  paintMarks(state.selected, 0x39d98a);
+  paintMarks(ghost, 0x39d98a);
   if (state.selected.userData.ring) {
     state.selected.userData.ring.material.color.setHex(0x39d98a);
   }
@@ -1224,34 +1291,41 @@ function onPointerDown(e) {
 
 function onPointerMove(e) {
   if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId);
+  const mdx = prev ? e.clientX - prev.x : 0;
+  const mdy = prev ? e.clientY - prev.y : 0;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   const dx = e.clientX - gesture.startX;
   const dy = e.clientY - gesture.startY;
   if (dx * dx + dy * dy > TAP_SLOP_PX * TAP_SLOP_PX) gesture.moved = true;
 
   if (isOrbitGesture(e)) {
-    if (gesture.moved) orbitBy(e.movementX, e.movementY);
+    if (gesture.moved) orbitBy(mdx, mdy);
     return;
   }
 
   if (state.phase !== "docking" || state.technique !== "touch" || !state.selected) return;
 
-  if (pointers.size >= 2 || (e.shiftKey && pointers.size === 1 && e.pointerType === "mouse")) {
+  const mouseRotate = e.shiftKey && pointers.size === 1 && e.pointerType === "mouse";
+  if (pointers.size >= 2 || mouseRotate) {
     if (pointers.size >= 2) {
       const ang = pointerAngle();
       let delta = ang - gesture.lastTwist;
       delta = Math.atan2(Math.sin(delta), Math.cos(delta));
       gesture.lastTwist = ang;
       const mid = pointerMid();
-      const mdx = mid.x - gesture.lastMidX;
-      const mdy = mid.y - gesture.lastMidY;
+      const pdx = mid.x - gesture.lastMidX;
+      const pdy = mid.y - gesture.lastMidY;
       gesture.lastMidX = mid.x;
       gesture.lastMidY = mid.y;
-      nudgeOrientation(state.selected, -mdy * 0.008, -delta, mdx * 0.008);
-    } else if (e.shiftKey) {
-      nudgeOrientation(state.selected, 0, 0, -e.movementX * 0.01);
+      const drag = Math.hypot(pdx, pdy);
+      if (Math.abs(delta) > 0.012 && Math.abs(delta) * 90 > drag) {
+        nudgeOrientation(state.selected, 0, 0, -delta * TWIST_GAIN);
+      } else if (drag > 0.35) {
+        rotFromDrag(pdx, pdy, false);
+      }
     } else {
-      nudgeOrientation(state.selected, -e.movementY * 0.01, -e.movementX * 0.01, 0);
+      rotFromDrag(mdx, mdy, e.altKey);
     }
     gesture.twisting = true;
     gesture.dragging = false;
@@ -1260,7 +1334,7 @@ function onPointerMove(e) {
 
   if (pointers.size === 1 && gesture.moved && !gesture.twisting) {
     gesture.dragging = true;
-    panSelected(e.movementX, e.movementY);
+    panSelected(mdx, mdy);
   }
 }
 
@@ -1353,7 +1427,8 @@ function onRotateDown(e) {
   ui.carry.classList.remove("held");
   ui.carry.textContent = "Desplazar";
   state.rotHeld = true;
-  getCam().getWorldQuaternion(carryAnchor.camQuat);
+  rotPointer.x = e.clientX;
+  rotPointer.y = e.clientY;
   carryAnchor.objQuat.copy(state.selected.quaternion);
   carryAnchor.objPos.copy(state.selected.position);
   ui.rotate.classList.add("held");
@@ -1362,9 +1437,13 @@ function onRotateDown(e) {
 }
 
 function onRotateMove(e) {
-  if (!state.rotHeld || !state.selected || state.mode !== "preview") return;
-  if (e.shiftKey) nudgeOrientation(state.selected, 0, 0, -e.movementX * 0.01);
-  else nudgeOrientation(state.selected, -e.movementY * 0.01, -e.movementX * 0.01, 0);
+  if (!state.rotHeld || !state.selected) return;
+  const dx = e.clientX - rotPointer.x;
+  const dy = e.clientY - rotPointer.y;
+  rotPointer.x = e.clientX;
+  rotPointer.y = e.clientY;
+  if (!dx && !dy) return;
+  rotFromDrag(dx, dy, e.shiftKey || e.altKey);
 }
 
 function onRotateUp(e) {
@@ -1551,6 +1630,10 @@ function animate(timestamp, frame) {
   updateReticle(frame);
 
   updateCarry(dt || 0.016);
+  if (ghost && ghost.userData.floorRing) layRingFlat(ghost, ghost.userData.floorRing);
+  if (state.selected && state.selected.userData.ring && state.selected.userData.ring.visible) {
+    layRingFlat(state.selected, state.selected.userData.ring);
+  }
   checkDock(now);
 
   if (state.mode === "preview" && state.phase === "placing") updateInstruction();
